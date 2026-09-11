@@ -48,6 +48,7 @@ except Exception:  # pragma: no cover
 from .textproc import clean_to_orig, orig_to_clean
 
 _SENT_END = re.compile(r"(?<=[。！？!?；;])")
+_NEXT_BOUNDARY = re.compile(r"[。！？!?；;\n]")
 
 _MAX_CHUNK = 160
 
@@ -85,15 +86,18 @@ def _hard_split(s):
     if len(s) <= _MAX_CHUNK:
         return [s]
     out = []
-    while len(s) > _MAX_CHUNK:
-        cut = s.rfind("，", 0, _MAX_CHUNK)
-        if cut < _MAX_CHUNK // 2:
-            cut = s.rfind(",", 0, _MAX_CHUNK)
-        if cut < _MAX_CHUNK // 2:
-            cut = _MAX_CHUNK
-        out.append(s[:cut])
-        s = s[cut:]
-    out.append(s)
+    start = 0
+    total = len(s)
+    while total - start > _MAX_CHUNK:
+        limit = start + _MAX_CHUNK
+        cut = s.rfind("，", start, limit)
+        if cut < start + _MAX_CHUNK // 2:
+            cut = s.rfind(",", start, limit)
+        if cut < start + _MAX_CHUNK // 2:
+            cut = limit
+        out.append(s[start:cut])
+        start = cut
+    out.append(s[start:])
     return out
 
 
@@ -1343,15 +1347,48 @@ class SpeechController:
 
     @staticmethod
     def _next_chunk(content, offset):
-        seg = content[offset:]
-        frags = split_sentences(seg)
-        if not frags:
-            return "", len(content), 0
-        text = frags[0]
-        start = seg.find(text)
-        if start < 0:
-            return text, offset + len(text), 0
-        return text, offset + start + len(text), start
+        """从 offset 起只扫描下一句，返回文本、下一偏移和句首相对偏移。
+
+        旧实现每次先切分全部剩余正文，长章节逐句推进时累计为 O(n²)。这里保持
+        ``split_sentences`` 的首句规则，但最多只检查一个朗读块，整章累计为 O(n)。
+        """
+        total = len(content)
+        offset = max(0, min(int(offset), total))
+        cursor = offset
+
+        while cursor < total:
+            # split_sentences 会先 strip，再忽略空行；这里直接跳到首个有效字符。
+            while cursor < total and content[cursor].isspace():
+                cursor += 1
+            if cursor >= total:
+                return "", total, 0
+
+            # 句末标点或换行只在首个朗读块范围内才会影响本次结果。边界落在
+            # 第 161 个字符及以后时，原规则也会先按 _MAX_CHUNK 硬切。
+            limit = min(total, cursor + _MAX_CHUNK)
+            match = _NEXT_BOUNDARY.search(content, cursor, limit)
+            if match is not None:
+                end = match.start() if match.group() == "\n" else match.end()
+                text = content[cursor:end].strip()
+                if not text:
+                    cursor = match.end()
+                    continue
+                start = content.find(text, cursor, end)
+                return text, start + len(text), start - offset
+
+            if total - cursor <= _MAX_CHUNK:
+                text = content[cursor:].strip()
+                if not text:
+                    return "", total, 0
+                start = content.find(text, cursor)
+                return text, start + len(text), start - offset
+
+            cut = content.rfind("，", cursor, limit)
+            if cut < cursor + _MAX_CHUNK // 2:
+                cut = content.rfind(",", cursor, limit)
+            if cut < cursor + _MAX_CHUNK // 2:
+                cut = limit
+            return content[cursor:cut], cut, cursor - offset
 
     # ---------- SAPI 后端 ----------
     def _speak_sapi(self, text, gen):

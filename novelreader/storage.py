@@ -180,6 +180,16 @@ class Storage:
         b["last_read_at"] = time.time()
         self.save()
 
+    def update_reading_state(self, bid, progress):
+        """一次写盘保存阅读进度和最后阅读书籍。"""
+        b = self.data["books"].get(bid)
+        if not b:
+            return
+        b["progress"] = progress
+        b["last_read_at"] = time.time()
+        self.data["settings"]["last_book"] = bid
+        self.save()
+
     def remove_book(self, bid):
         self.data["books"].pop(bid, None)
         self.save()

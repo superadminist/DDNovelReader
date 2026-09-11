@@ -1,5 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """阅读区：书籍加载 / 章节渲染 / 进度 / 滚动 / 高亮跟随 / 分页 / 定时保存（从 gui.py 拆分的 Mixin 之一）。"""
+import bisect
 import ctypes
 import os
 import queue
@@ -36,6 +37,8 @@ from .constants import (
 
 class ReaderMixin:
     """阅读区：书籍加载 / 章节渲染 / 进度 / 滚动 / 高亮跟随 / 分页 / 定时保存"""
+    _PROGRESS_SAVE_INTERVAL_MS = 5000
+
     def _load_book(self, path, force_reparse=False):
         """加载书籍：内存缓存 → 磁盘缓存(版本匹配) → 源文件(原路径/备份源) → 旧缓存(静默兜底)。
 
@@ -102,6 +105,8 @@ class ReaderMixin:
         meta = self.storage.get_book(bid)
         if not meta:
             return
+        if self.current_bid and self.book and self.current_bid != bid:
+            self._save_now()
         self.tts.stop()
         self.current_bid = bid
         self.tts.set_book_id(bid)
@@ -385,15 +390,21 @@ class ReaderMixin:
         line, col = self._transformed_pos(content, offset)
         self.text.see(f"{line}.{col}")
     def _schedule_save(self):
-        if self._save_timer:
-            self.root.after_cancel(self._save_timer)
-        self._save_timer = self.root.after(700, self._save_now)
+        # 高频滚动/逐句事件只共用一个定时器，最多每 5 秒写盘一次。
+        if self._save_timer is None:
+            self._save_timer = self.root.after(self._PROGRESS_SAVE_INTERVAL_MS, self._save_now)
     def _save_now(self):
+        timer = self._save_timer
         self._save_timer = None
+        if timer:
+            try:
+                self.root.after_cancel(timer)
+            except Exception:
+                pass
         if not self.current_bid or not self.book:
             return
         pct = self._compute_percent(self.chapter_idx, self.char_offset)
-        self.storage.update_progress(
+        self.storage.update_reading_state(
             self.current_bid,
             {
                 "chapter_idx": self.chapter_idx,
@@ -401,8 +412,7 @@ class ReaderMixin:
                 "percent": round(pct, 3),
             },
         )
-        self.storage.set_setting("last_book", self.current_bid)
-        self._refresh_bookshelf()
+        self._update_bookshelf_progress(self.current_bid, pct)
     def _goto_chapter(self, ci, offset=0):
         if not self.book:
             return
@@ -410,6 +420,7 @@ class ReaderMixin:
         was_active = self.tts.is_active()
         if was_active:
             self.tts.stop()  # 结束旧会话，避免旧章节状态冲突
+        self._save_now()
         self.chapter_idx = ci
         self.char_offset = offset
         self._render_chapter()
@@ -477,15 +488,24 @@ class ReaderMixin:
         空行模式会改变换行数量，导致按原文计算的 行/列 在渲染文本中错位；
         朗读高亮、滚动定位都必须经过此映射才能落在正确位置。
         """
-        before = content[:off]
-        nl_before = before.count("\n")
+        off = max(0, min(int(off), len(content)))
+        cache = self._line_map_cache
+        if cache is None or cache[0] is not content:
+            starts = [0]
+            pos = content.find("\n")
+            while pos >= 0:
+                starts.append(pos + 1)
+                pos = content.find("\n", pos + 1)
+            cache = (content, starts)
+            self._line_map_cache = cache
+        starts = cache[1]
+        nl_before = bisect.bisect_right(starts, off) - 1
         mode = int(self.settings.get("paragraph_mode", 1))
         if mode == 3:
             # 清理所有行：所有换行被删除，正文只有第 1 行；加上标题占的行数
             return self._body_start_line, off - nl_before
         line = nl_before + 1
-        last_nl = before.rfind("\n")
-        col = off - (last_nl + 1) if last_nl >= 0 else off
+        col = off - starts[nl_before]
         if mode == 2:
             # 合并为一行：每个段落间多一个空行，原始第 L 段 → 渲染第 2L-1 行
             line = line * 2 - 1
@@ -515,7 +535,9 @@ class ReaderMixin:
                     break
         except Exception:
             end = start
-        self.text.tag_remove("tts", "1.0", "end")
+        ranges = self.text.tag_ranges("tts")
+        if ranges:
+            self.text.tag_remove("tts", ranges[0], ranges[-1])
         self.text.tag_add("tts", start, end)
         self._highlight_index = (ci, start)
         self._pin_highlight_top(start)
@@ -570,7 +592,9 @@ class ReaderMixin:
         self._pending_seek_pct = None
         self._status_scroll_timer = None
         try:
-            self.text.tag_remove("tts", "1.0", "end")
+            ranges = self.text.tag_ranges("tts")
+            if ranges:
+                self.text.tag_remove("tts", ranges[0], ranges[-1])
         except Exception:
             pass
     def _shortcut_read_from_paragraph(self):

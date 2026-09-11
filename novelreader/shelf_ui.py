@@ -104,6 +104,33 @@ class ShelfMixin:
                                     values=("", "（书架为空，点击『添加书籍』导入）", "", ""))
         # 后台异步计算缺失的缓存大小
         self._refresh_shelf_sizes_async()
+    def _update_bookshelf_progress(self, bid, percent):
+        """只更新当前书的进度/时间；按进度排序时同步调整位置。"""
+        try:
+            if not self.shelf_tree.exists(bid):
+                return
+            values = list(self.shelf_tree.item(bid, "values"))
+            if len(values) < 4:
+                return
+            values[0] = f"{percent:.0f}%"
+            book = self.storage.get_book(bid) or {}
+            ts = book.get("added_at", book.get("last_read_at", 0))
+            values[3] = time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "-"
+            self.shelf_tree.item(bid, values=values)
+
+            col = getattr(self, "_shelf_sort_col", "time")
+            if col != "progress":
+                return
+            reverse = getattr(self, "_shelf_sort_rev", True)
+            children = [iid for iid in self.shelf_tree.get_children() if iid != "__empty__"]
+            def sort_key(iid):
+                meta = self.storage.get_book(iid) or {}
+                return float((meta.get("progress") or {}).get("percent", 0))
+            ordered = sorted(children, key=sort_key, reverse=reverse)
+            for index, iid in enumerate(ordered):
+                self.shelf_tree.move(iid, "", index)
+        except Exception:
+            pass
     def _shelf_sort(self, col):
         if getattr(self, "_shelf_sort_col", "") == col:
             self._shelf_sort_rev = not getattr(self, "_shelf_sort_rev", True)

@@ -43,6 +43,7 @@ class TtsMixin:
             return
         if self.tts.is_playing():
             self.tts.pause()
+            self._save_now()
             self._set_tts_ui("paused")
         elif self.tts.is_paused():
             self.tts.resume()
@@ -52,6 +53,7 @@ class TtsMixin:
             self._set_tts_ui("playing")
     def _tts_stop(self):
         self.tts.stop()
+        self._save_now()
         self._set_tts_ui("stopped")
         self._clear_highlight()
     def _flash_status(self, msg):

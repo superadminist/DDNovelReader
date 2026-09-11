@@ -58,6 +58,7 @@ class NovelReaderBase:
         self._resize_timer = None
         self._pending_seek_pct = None
         self._status_scroll_timer = None
+        self._line_map_cache = None
 
         self._build_ui()
         self._apply_settings_to_ui()

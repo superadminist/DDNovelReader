@@ -309,11 +309,42 @@ def split_chapters(text):
     return chapters
 
 
+def _split_long_paragraph(text, target):
+    """把超长自然段切成不超过 target 的片段，优先在句末或换行处断开。"""
+    text = text.strip()
+    if len(text) <= target:
+        return [text] if text else []
+    out = []
+    start = 0
+    total = len(text)
+    while total - start > target:
+        limit = start + target
+        cut = max(text.rfind(ch, start, limit) for ch in "。！？!?；;\n") + 1
+        if cut < start + target // 2:
+            cut = limit
+        part = text[start:cut].strip()
+        if part:
+            out.append(part)
+        start = cut
+        while start < total and text[start].isspace():
+            start += 1
+    tail = text[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
 def fallback_split(text, para_target=5000):
     """文本没有章节标题时，按自然段落聚合成小节（约 5000 字一段）。"""
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text if text else "", ) if p.strip()]
-    if not paras:
-        paras = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+    source = text if text else ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", source) if p.strip()]
+    # 只有单换行的 TXT/DOCX 也应按行视作自然段，避免整篇文章成为一个超长段落。
+    if len(paras) <= 1 and "\n" in source:
+        paras = [ln.strip() for ln in source.split("\n") if ln.strip()]
+    expanded = []
+    for p in paras:
+        expanded.extend(_split_long_paragraph(p, para_target))
+    paras = expanded
     chapters = []
     cur, cur_len = [], 0
     for p in paras:

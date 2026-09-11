@@ -41,6 +41,15 @@ def test_chapterizer():
     fb = chapterizer.fallback_split(plain)
     check("无章节标题走兜底切分", len(fb) >= 1 and all(c[0] for c in fb))
 
+    single_lines = "\n".join((f"第{i}行" + "内容" * 80) for i in range(80))
+    fb_lines = chapterizer.fallback_split(single_lines, para_target=5000)
+    check("单换行长文按目标长度切分", len(fb_lines) >= 2 and max(len(b) for _, b in fb_lines) <= 5200,
+          f"chapters={len(fb_lines)} max={max(len(b) for _, b in fb_lines)}")
+    continuous = "这是没有换行的长句内容。" * 1000
+    fb_continuous = chapterizer.fallback_split(continuous, para_target=5000)
+    check("无换行长文按句末切分", len(fb_continuous) >= 2 and max(len(b) for _, b in fb_continuous) <= 5000,
+          f"chapters={len(fb_continuous)} max={max(len(b) for _, b in fb_continuous)}")
+
     # 验证切分后首章标题为"第一章 相遇"
     check("章节标题正确", spl[1][0] == "第一章 相遇", spl[1][0] if spl else "None")
 
@@ -129,11 +138,37 @@ def test_storage():
         check("进度持久化", b["progress"]["percent"] == 12.5 and b["progress"]["chapter_idx"] == 2)
         check("设置持久化", s2.get_setting("theme") == "夜间")
 
+        writes = [0]
+        real_save = s.save
+        def counted_save():
+            writes[0] += 1
+            real_save()
+        s.save = counted_save
+        s.update_reading_state(bid, {"chapter_idx": 3, "char_offset": 600, "percent": 15.0})
+        check("阅读状态一次写盘", writes[0] == 1, f"writes={writes[0]}")
+        check("阅读状态同时保存最后书籍", s.get_setting("last_book") == bid)
+
 
 def test_tts_logic():
     print("[tts_engine]")
     frags = split_sentences("第一句。第二句！第三句？\n新段落开始。长句子没有标点被硬切，" * 3)
     check("句子切分非空", len(frags) > 0)
+
+    samples = [
+        "  第一行。第二行！\n第三行没有句号",
+        "没有标点但很长，" * 100,
+        "\n\n   空行之后。  下一句；最后一句",
+    ]
+    for idx, sample in enumerate(samples, 1):
+        expected = split_sentences(sample)
+        actual, off = [], 0
+        while off < len(sample):
+            text, next_off, _ = SpeechController._next_chunk(sample, off)
+            if not text or next_off <= off:
+                break
+            actual.append(text)
+            off = next_off
+        check(f"增量切句与原规则一致{idx}", actual == expected, f"{actual!r} vs {expected!r}")
 
     voices = SpeechController.list_voices()
     check("能枚举系统语音", len(voices) > 0, f"n={len(voices)}")

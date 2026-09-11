@@ -101,7 +101,7 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-CONTENT_CACHE_VERSION = 8  # normalize 支持全角空格分段，强制重解析  # 缓存格式版本，改动解析结果后需递增以强制重解析
+CONTENT_CACHE_VERSION = 9  # 无章节长文按约 5000 字可靠拆分，旧缓存需重新解析
 
 
 def normalize_body(text: str) -> str:
