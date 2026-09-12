@@ -210,7 +210,7 @@ class Stage3QtBridgeTests(unittest.TestCase):
         state = self._data(self.bridge.getInitialState())
         self.assertTrue(state["capabilities"]["reader"])
         self.assertTrue(state["capabilities"]["tts"])
-        self.assertFalse(state["capabilities"]["floatingReader"])
+        self.assertTrue(state["capabilities"]["floatingReader"])
         meta = self.bridge.metaObject()
         signatures = {
             bytes(meta.method(index).methodSignature()).decode()
@@ -227,6 +227,12 @@ class Stage3QtBridgeTests(unittest.TestCase):
             "removeReaderBookmark(QString)",
             "controlReaderPlayback(QString)",
             "updateReaderSettings(QString)",
+            "getFloatingReaderState()",
+            "showFloatingReader()",
+            "closeFloatingReader()",
+            "updateFloatingReaderSettings(QString)",
+            "startFloatingWindowMove()",
+            "startFloatingWindowResize(QString)",
         ):
             self.assertIn(signature, signatures)
 

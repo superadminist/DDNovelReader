@@ -118,6 +118,22 @@ class PlaybackServiceTests(unittest.TestCase):
         self.assertEqual(event["sessionId"], "reader-1")
         self.assertEqual(event["playback"]["sentence"]["endOffset"], 4)
 
+    def test_floating_context_is_lazy_and_uses_bound_session(self):
+        self.assertEqual(
+            self.service.session_identity(),
+            {"sessionId": "reader-1", "bookId": "book-1"},
+        )
+        self.assertEqual(self.service._sentence_cache, {})
+
+        context = self.service.floating_context()
+
+        self.assertEqual(context["chapterIndex"], 0)
+        self.assertEqual(context["chapterTitle"], "第一章")
+        self.assertIsNone(context["previous"])
+        self.assertEqual(context["current"]["text"], "第一句。")
+        self.assertEqual(context["next"]["text"], "第二句！")
+        self.assertEqual(set(self.service._sentence_cache), {0})
+
     def test_stale_generation_is_discarded_after_restart(self):
         self.service.control("play", "play-1")
         old_generation = self.speech.generation()

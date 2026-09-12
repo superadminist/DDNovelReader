@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QFile, QIODevice, Qt, QUrl
-from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtCore import QEvent, QFile, QIODevice, QRect, QTimer, Qt, QUrl, QUrlQuery
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
@@ -55,6 +56,172 @@ def frontend_index_path() -> Path:
     return candidates[0]
 
 
+_GEOMETRY_PATTERN = re.compile(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$")
+
+
+def clamp_floating_geometry(value: str, work_areas: list[QRect]) -> QRect:
+    """Normalize a saved geometry into one of the available screen work areas."""
+    areas = [QRect(area) for area in work_areas if area.isValid()]
+    if not areas:
+        areas = [QRect(0, 0, 1280, 720)]
+    primary = areas[0]
+    match = _GEOMETRY_PATTERN.fullmatch(str(value or ""))
+    if match:
+        width, height, x, y = (int(part) for part in match.groups())
+    else:
+        width, height = 560, 300
+        x = primary.right() - width - 31
+        y = primary.bottom() - height - 31
+    target = next(
+        (area for area in areas if area.contains(x + width // 2, y + height // 2)),
+        None,
+    )
+    if target is None:
+        candidate = QRect(x, y, max(1, width), max(1, height))
+        target = max(
+            areas,
+            key=lambda area: area.intersected(candidate).width()
+            * area.intersected(candidate).height(),
+        )
+        if not target.intersects(candidate):
+            target = primary
+    width = min(max(360, width), target.width())
+    height = min(max(220, height), target.height())
+    x = min(max(x, target.left()), target.right() - width + 1)
+    y = min(max(y, target.top()), target.bottom() - height + 1)
+    return QRect(x, y, width, height)
+
+
+def qt_geometry_string(rect: QRect) -> str:
+    x = f"+{rect.x()}" if rect.x() >= 0 else str(rect.x())
+    y = f"+{rect.y()}" if rect.y() >= 0 else str(rect.y())
+    return f"{rect.width()}x{rect.height()}{x}{y}"
+
+
+def floating_frontend_url() -> QUrl:
+    url = QUrl.fromLocalFile(os.fspath(frontend_index_path()))
+    query = QUrlQuery()
+    query.addQueryItem("surface", "floating")
+    url.setQuery(query)
+    return url
+
+
+def _inject_qwebchannel_script(page: QWebEnginePage) -> None:
+    resource = QFile(":/qtwebchannel/qwebchannel.js")
+    if not resource.open(QIODevice.OpenModeFlag.ReadOnly):
+        return
+    script = QWebEngineScript()
+    script.setName("qwebchannel.js")
+    script.setSourceCode(bytes(resource.readAll()).decode("utf-8"))
+    script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+    script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+    script.setRunsOnSubFrames(False)
+    page.scripts().insert(script)
+
+
+class FloatingReaderWindow(QMainWindow):
+    """Independent frameless React window sharing the main window's bridge."""
+
+    def __init__(self, bridge: DesktopBridge, profile: QWebEngineProfile):
+        super().__init__(None)
+        self.bridge = bridge
+        self._profile = profile
+        self._allow_close = False
+        self._settings: dict = {}
+        self.setWindowTitle("多多朗读 - 悬浮朗读")
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumSize(360, 220)
+
+        self._view = QWebEngineView(self)
+        self._page = QWebEnginePage(profile, self._view)
+        self._view.setPage(self._page)
+        self._page.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+            True,
+        )
+        _inject_qwebchannel_script(self._page)
+        self._channel = QWebChannel(self._page)
+        self._channel.registerObject("ddBridge", bridge)
+        self._page.setWebChannel(self._channel)
+        self.setCentralWidget(self._view)
+
+        self._view.setUrl(floating_frontend_url())
+
+        self._geometry_timer = QTimer(self)
+        self._geometry_timer.setSingleShot(True)
+        self._geometry_timer.setInterval(180)
+        self._geometry_timer.timeout.connect(self._persist_geometry)
+
+    def show_with_settings(self, settings: dict) -> None:
+        self._settings = dict(settings)
+        rect = clamp_floating_geometry(
+            settings.get("geometry", ""), self._available_work_areas()
+        )
+        self.setGeometry(rect)
+        self.apply_settings(settings)
+        self.show()
+        if settings.get("topmost", True):
+            self.raise_()
+        self._persist_geometry()
+
+    def apply_settings(self, settings: dict) -> None:
+        self._settings = dict(settings)
+        was_visible = self.isVisible()
+        self.setWindowOpacity(float(settings.get("opacity", 0.92)))
+        self.setWindowFlag(
+            Qt.WindowType.WindowStaysOnTopHint,
+            bool(settings.get("topmost", True)),
+        )
+        if was_visible:
+            self.show()
+
+    def ensure_visible_after_main_minimize(self) -> None:
+        if self.isVisible():
+            self.show()
+            if self._settings.get("topmost", True):
+                self.raise_()
+
+    def shutdown(self) -> None:
+        self._geometry_timer.stop()
+        if self.isVisible():
+            self._persist_geometry()
+        self._allow_close = True
+        self.close()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._allow_close:
+            event.accept()
+            return
+        self._geometry_timer.stop()
+        self._persist_geometry()
+        self.hide()
+        event.ignore()
+        self.bridge.floatingWindowClosed()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        if hasattr(self, "_geometry_timer"):
+            self._geometry_timer.start()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_geometry_timer"):
+            self._geometry_timer.start()
+
+    def _persist_geometry(self) -> None:
+        rect = clamp_floating_geometry(
+            qt_geometry_string(self.geometry()), self._available_work_areas()
+        )
+        if rect != self.geometry():
+            self.setGeometry(rect)
+        self.bridge.floatingGeometryChanged(qt_geometry_string(rect))
+
+    def _available_work_areas(self) -> list[QRect]:
+        screen = self.screen()
+        screens = screen.virtualSiblings() if screen is not None else QGuiApplication.screens()
+        return [item.availableGeometry() for item in screens]
+
+
 class DesktopWindow(QMainWindow):
     def __init__(self, library: LibraryQueryService | None = None):
         super().__init__()
@@ -93,6 +260,7 @@ class DesktopWindow(QMainWindow):
             playback=self._playback,
             file_picker=self._select_import_files,
         )
+        self._floating_window: FloatingReaderWindow | None = None
         self._channel = QWebChannel(self._page)
         self._channel.registerObject("ddBridge", self.bridge)
         self._page.setWebChannel(self._channel)
@@ -113,17 +281,7 @@ class DesktopWindow(QMainWindow):
         )
 
     def _inject_qwebchannel_script(self) -> None:
-        resource = QFile(":/qtwebchannel/qwebchannel.js")
-        if not resource.open(QIODevice.OpenModeFlag.ReadOnly):
-            return
-        source = bytes(resource.readAll()).decode("utf-8")
-        script = QWebEngineScript()
-        script.setName("qwebchannel.js")
-        script.setSourceCode(source)
-        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
-        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-        script.setRunsOnSubFrames(False)
-        self._page.scripts().insert(script)
+        _inject_qwebchannel_script(self._page)
 
     def centerOnPrimaryScreen(self) -> None:
         screen = self.screen()
@@ -144,6 +302,32 @@ class DesktopWindow(QMainWindow):
         )
         return paths
 
+    def showFloatingReaderWindow(self, settings: dict) -> None:
+        if self._floating_window is None:
+            self._floating_window = FloatingReaderWindow(self.bridge, self._profile)
+        self._floating_window.show_with_settings(settings)
+
+    def closeFloatingReaderWindow(self) -> None:
+        if self._floating_window is not None and self._floating_window.isVisible():
+            self._floating_window.close()
+
+    def applyFloatingReaderSettings(self, settings: dict) -> None:
+        if self._floating_window is not None:
+            self._floating_window.apply_settings(settings)
+
+    def floatingWindowHandle(self):
+        if self._floating_window is None or not self._floating_window.isVisible():
+            return None
+        return self._floating_window.windowHandle()
+
+    def shutdownFloatingReaderWindow(self) -> None:
+        if self._floating_window is None:
+            return
+        window = self._floating_window
+        self._floating_window = None
+        window.shutdown()
+        window.deleteLater()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if hasattr(self, "bridge"):
             self.bridge.shutdown()
@@ -153,3 +337,5 @@ class DesktopWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "bridge"):
             self.bridge.emitWindowState()
+            if self.isMinimized() and self._floating_window is not None:
+                self._floating_window.ensure_visible_after_main_minimize()

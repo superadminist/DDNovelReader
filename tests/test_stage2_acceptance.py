@@ -267,7 +267,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertFalse(capabilities["audioImport"])
         self.assertTrue(capabilities["reader"])
         self.assertTrue(capabilities["tts"])
-        self.assertFalse(capabilities["floatingReader"])
+        self.assertTrue(capabilities["floatingReader"])
 
     def test_file_selection_cancel_is_a_zero_write_success(self):
         before = _tree_manifest(self.data_root)

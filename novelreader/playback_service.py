@@ -49,6 +49,10 @@ class PlaybackService:
     def speech_controller(self):
         return self._speech
 
+    def session_identity(self):
+        with self._lock:
+            return {"sessionId": self._session_id, "bookId": self._book_id}
+
     def bind_session(
         self,
         session_id,
@@ -138,6 +142,48 @@ class PlaybackService:
                 "requestedBackend": requested,
                 "activeBackend": self._active_backend,
                 "fallbackActive": self._fallback_active,
+            }
+
+    def floating_context(self):
+        """Return the adjacent three-sentence view without eagerly scanning text.
+
+        Sentence boundaries are cached per chapter and are only built when the
+        floating reader asks for them.  The floating window therefore consumes
+        the same position and sentence state as the main reader without adding
+        a second event-drain path.
+        """
+        with self._lock:
+            if self._book is None:
+                return {
+                    "chapterIndex": 0,
+                    "chapterTitle": "",
+                    "previous": None,
+                    "current": None,
+                    "next": None,
+                }
+            chapter_index = self._chapter_index
+            chapter = self._book.chapters[chapter_index]
+            entries = self._sentence_entries(chapter_index)
+            if not entries:
+                return {
+                    "chapterIndex": chapter_index,
+                    "chapterTitle": str(chapter.title or f"第 {chapter_index + 1} 章"),
+                    "previous": None,
+                    "current": None,
+                    "next": None,
+                }
+            starts = [entry[0] for entry in entries]
+            current_index = max(
+                0,
+                min(len(entries) - 1, bisect.bisect_right(starts, self._char_offset) - 1),
+            )
+            current = self._sentence_payload(chapter_index, entries[current_index])
+            return {
+                "chapterIndex": chapter_index,
+                "chapterTitle": str(chapter.title or f"第 {chapter_index + 1} 章"),
+                "previous": self._relative_sentence(chapter_index, current_index, -1),
+                "current": current,
+                "next": self._relative_sentence(chapter_index, current_index, 1),
             }
 
     def drain_events(self):
@@ -380,6 +426,40 @@ class PlaybackService:
             "text": text,
         }
         return chapter_index, start, sentence
+
+    @staticmethod
+    def _sentence_payload(chapter_index, entry):
+        start, end, text = entry
+        return {
+            "chapterIndex": chapter_index,
+            "startOffset": start,
+            "endOffset": end,
+            "text": text,
+        }
+
+    def _relative_sentence(self, chapter_index, sentence_index, delta):
+        target_chapter = chapter_index
+        target_index = sentence_index + delta
+        entries = self._sentence_entries(target_chapter)
+        if target_index < 0:
+            while True:
+                target_chapter -= 1
+                if target_chapter < 0:
+                    return None
+                entries = self._sentence_entries(target_chapter)
+                if entries:
+                    break
+            target_index = len(entries) - 1
+        elif target_index >= len(entries):
+            while True:
+                target_chapter += 1
+                if target_chapter >= len(self._book.chapters):
+                    return None
+                entries = self._sentence_entries(target_chapter)
+                if entries:
+                    break
+            target_index = 0
+        return self._sentence_payload(target_chapter, entries[target_index])
 
     def _ensure_bound(self):
         self._ensure_open()

@@ -14,6 +14,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 
+from .floating_reader_service import FloatingReaderError, FloatingReaderService
 from .import_service import ImportCandidate, ImportServiceError, LibraryImportService
 from .library_service import LibraryDataError, LibraryQueryService
 from .playback_service import PlaybackService
@@ -30,7 +31,7 @@ CAPABILITIES = {
     "audioImport": False,
     "reader": True,
     "tts": True,
-    "floatingReader": False,
+    "floatingReader": True,
 }
 
 RESIZE_EDGES = {
@@ -88,6 +89,7 @@ class DesktopBridge(QObject):
     readerOpened = Signal(str)
     readerSearchFinished = Signal(str)
     readerPlaybackChanged = Signal(str)
+    floatingReaderChanged = Signal(str)
 
     def __init__(
         self,
@@ -105,6 +107,7 @@ class DesktopBridge(QObject):
         self._importer = importer or LibraryImportService(library_path)
         self._reader = reader or ReaderService(library_path)
         self._playback = playback or PlaybackService(SpeechController())
+        self._floating = FloatingReaderService(self._playback, library_path)
         self._file_picker = file_picker or (lambda: [])
         self._selections: dict[str, tuple[ImportCandidate, ...]] = {}
         self._active_job_id = ""
@@ -375,6 +378,7 @@ class DesktopBridge(QObject):
                 position["chapterIndex"], position["charOffset"], restart_playing=True
             )
             data["playback"] = self._playback.snapshot()
+            self._emit_floating_state_if_visible()
             return self._ok_response(data)
         except Exception as exc:
             return self._reader_error_response(empty, exc)
@@ -393,6 +397,7 @@ class DesktopBridge(QObject):
             )
             position = data["position"]
             self._playback.set_position(position["chapterIndex"], position["charOffset"])
+            self._emit_floating_state_if_visible()
             return self._ok_response(data)
         except Exception as exc:
             return self._reader_error_response(empty, exc)
@@ -519,6 +524,86 @@ class DesktopBridge(QObject):
         except Exception as exc:
             return self._reader_error_response(empty, exc)
 
+    @Slot(result=str)
+    def getFloatingReaderState(self) -> str:
+        return self._ok_response(self._floating.state())
+
+    @Slot(result=str)
+    def showFloatingReader(self) -> str:
+        try:
+            self._floating.show()
+            show = getattr(self._window, "showFloatingReaderWindow", None)
+            if not callable(show):
+                raise RuntimeError("floating window host is unavailable")
+            show(self._floating.state()["settings"])
+            state = self._floating.state()
+            self._emit_floating_state(state)
+            return self._ok_response(state)
+        except Exception as exc:
+            self._floating.close()
+            return self._floating_error_response(self._floating.state(), exc)
+
+    @Slot(result=str)
+    def closeFloatingReader(self) -> str:
+        try:
+            close = getattr(self._window, "closeFloatingReaderWindow", None)
+            if callable(close):
+                close()
+            if self._floating.close():
+                self._emit_floating_state()
+            return self._ok_response({"closed": True})
+        except Exception as exc:
+            return self._floating_error_response({"closed": False}, exc)
+
+    @Slot(str, result=str)
+    def updateFloatingReaderSettings(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        if request is None:
+            return self._error_response(
+                self._floating.state(),
+                "INVALID_REQUEST",
+                "悬浮窗设置请求格式不正确。",
+            )
+        try:
+            state = self._floating.update_settings(request.get("patch"))
+            apply_settings = getattr(self._window, "applyFloatingReaderSettings", None)
+            if callable(apply_settings):
+                apply_settings(state["settings"])
+            self._emit_floating_state(state)
+            return self._ok_response(state)
+        except Exception as exc:
+            return self._floating_error_response(self._floating.state(), exc)
+
+    @Slot()
+    def startFloatingWindowMove(self) -> None:
+        handle = self._floating_window_handle()
+        if handle is None or not handle.startSystemMove():
+            self._emit_error("WINDOW_MOVE_FAILED", "当前系统无法开始拖动悬浮窗。")
+
+    @Slot(str)
+    def startFloatingWindowResize(self, edge: str) -> None:
+        qt_edge = RESIZE_EDGES.get(edge)
+        if qt_edge is None:
+            self._emit_error("INVALID_RESIZE_EDGE", "无效的悬浮窗缩放方向。")
+            return
+        handle = self._floating_window_handle()
+        if handle is None or not handle.startSystemResize(qt_edge):
+            self._emit_error("WINDOW_RESIZE_FAILED", "当前系统无法开始缩放悬浮窗。")
+
+    def floatingWindowClosed(self) -> None:
+        """Handle a user-close without stopping the shared TTS controller."""
+        if self._floating.close():
+            self._emit_floating_state()
+
+    def floatingGeometryChanged(self, geometry: str) -> None:
+        try:
+            changed = self._floating.update_geometry(geometry)
+        except FloatingReaderError as exc:
+            self._emit_error(exc.code, exc.user_message)
+            return
+        if changed and self._floating.visible:
+            self._emit_floating_state()
+
     @Slot()
     def minimizeWindow(self) -> None:
         self._window.showMinimized()
@@ -570,11 +655,41 @@ class DesktopBridge(QObject):
             self._search_cancel.set()
         self._reader_timer.stop()
         self._import_timer.stop()
+        shutdown_floating = getattr(self._window, "shutdownFloatingReaderWindow", None)
+        if callable(shutdown_floating):
+            shutdown_floating()
         deadline = time.monotonic() + 2.0
         for thread in (self._import_thread, self._reader_thread, self._search_thread):
             if thread is not None and thread.is_alive():
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._playback.shutdown(2.0)
+
+    def _floating_window_handle(self):
+        getter = getattr(self._window, "floatingWindowHandle", None)
+        return getter() if callable(getter) else None
+
+    def _emit_floating_state_if_visible(self) -> None:
+        if self._floating.visible:
+            self._emit_floating_state()
+
+    def _emit_floating_state(self, state: dict[str, Any] | None = None) -> None:
+        self.floatingReaderChanged.emit(_json({
+            "schemaVersion": SCHEMA_VERSION,
+            "state": state or self._floating.state(),
+        }))
+
+    def _floating_error_response(self, data: dict[str, Any], exc: Exception) -> str:
+        if isinstance(exc, FloatingReaderError):
+            return self._error_response(
+                data, exc.code, exc.user_message, exc.retryable
+            )
+        LOGGER.exception("Unexpected floating reader failure", exc_info=exc)
+        return self._error_response(
+            data,
+            "FLOATING_READER_FAILED",
+            "悬浮朗读窗暂时不可用，请稍后重试。",
+            True,
+        )
 
     def _start_import_job(
         self,
@@ -650,6 +765,7 @@ class DesktopBridge(QObject):
                     self._reader_open_request_id = ""
                     self._reader_thread = None
                 self.readerOpened.emit(_json(payload))
+                self._emit_floating_state_if_visible()
             elif event_type == "search":
                 if payload.get("requestId") == self._search_request_id:
                     self._search_thread = None
@@ -673,6 +789,7 @@ class DesktopBridge(QObject):
                 except ReaderServiceError as exc:
                     self._emit_error(exc.code, exc.user_message)
             self.readerPlaybackChanged.emit(_json(event))
+            self._emit_floating_state_if_visible()
 
     @staticmethod
     def _request_object(request_json: str) -> dict[str, Any] | None:
