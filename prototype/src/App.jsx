@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, startTransition, useEffect, useReducer, useRef, useState } from "react";
 import {
   ArrowLeft,
   Article,
@@ -55,6 +55,61 @@ const EMPTY_IMPORT_STATE = {
   message: "",
   tone: "info",
 };
+
+const EMPTY_READER_STATE = {
+  phase: "idle",
+  requestId: "",
+  requestedBookId: "",
+  data: null,
+  error: "",
+  windowLoading: false,
+  pendingCommand: "",
+  search: { status: "idle", requestId: "", query: "", page: null, error: "" },
+  bookmarks: { status: "idle", page: null, error: "" },
+};
+
+function readerReducer(state, action) {
+  switch (action.type) {
+    case "OPENING":
+      return { ...EMPTY_READER_STATE, phase: "opening", requestedBookId: action.bookId };
+    case "OPEN_ACCEPTED":
+      return state.phase === "opening" ? { ...state, requestId: action.requestId } : state;
+    case "OPENED":
+      return { ...EMPTY_READER_STATE, phase: "ready", requestId: action.requestId, requestedBookId: action.data.book.id, data: action.data };
+    case "FAILED":
+      return { ...EMPTY_READER_STATE, phase: "error", requestedBookId: state.requestedBookId, error: action.error };
+    case "RESET":
+      return { ...EMPTY_READER_STATE };
+    case "WINDOW_LOADING":
+      return { ...state, windowLoading: true };
+    case "WINDOW":
+      return state.data ? { ...state, windowLoading: false, data: { ...state.data, window: action.window } } : state;
+    case "NAVIGATED":
+      return state.data ? { ...state, windowLoading: false, data: { ...state.data, position: action.data.position, window: action.data.window, playback: action.data.playback } } : state;
+    case "POSITION":
+      return state.data ? { ...state, data: { ...state.data, position: action.position, playback: { ...state.data.playback, position: action.position } } } : state;
+    case "PLAYBACK_PENDING":
+      return { ...state, pendingCommand: action.command };
+    case "PLAYBACK":
+      return state.data ? { ...state, pendingCommand: "", data: { ...state.data, position: action.playback.position, playback: action.playback } } : state;
+    case "SETTINGS":
+      return state.data ? { ...state, data: { ...state.data, settings: action.settings } } : state;
+    case "SEARCH_LOADING":
+      return { ...state, search: { status: "loading", requestId: action.requestId || "", query: action.query, page: null, error: "" } };
+    case "SEARCH_RESULT":
+      return { ...state, search: { ...state.search, status: "ready", page: action.page, error: "" } };
+    case "SEARCH_ERROR":
+      return { ...state, search: { ...state.search, status: "error", page: null, error: action.error } };
+    case "BOOKMARKS_LOADING":
+      return { ...state, bookmarks: { status: "loading", page: null, error: "" } };
+    case "BOOKMARKS":
+      return { ...state, bookmarks: { status: "ready", page: action.page, error: "" } };
+    case "BOOKMARKS_ERROR":
+      return { ...state, bookmarks: { status: "error", page: null, error: action.error } };
+    default:
+      return state;
+  }
+}
 
 const chapters = [
   "序言：为什么要重新理解运气",
@@ -202,7 +257,7 @@ function WindowResizeHandles({ controls }) {
   ));
 }
 
-function ReaderToolbar({ onBack, fontSize, setFontSize, floating, setFloating }) {
+function DemoReaderToolbar({ onBack, fontSize, setFontSize, floating, setFloating }) {
   return (
     <div className="reader-toolbar">
       <div className="toolbar-group"><IconButton label="返回内容库" onClick={onBack}><ArrowLeft /></IconButton><IconButton label="显示或隐藏目录"><SidebarSimple /></IconButton><span className="toolbar-title">财富自由之路</span></div>
@@ -212,7 +267,7 @@ function ReaderToolbar({ onBack, fontSize, setFontSize, floating, setFloating })
   );
 }
 
-function Player({ playing, setPlaying, setFloating }) {
+function DemoPlayer({ playing, setPlaying, setFloating }) {
   const [progress, setProgress] = useState(43);
   useEffect(() => {
     if (!playing) return undefined;
@@ -229,16 +284,16 @@ function Player({ playing, setPlaying, setFloating }) {
   );
 }
 
-function Reader({ setPage, fontSize, setFontSize, playing, setPlaying, floating, setFloating }) {
+function DemoReader({ setPage, fontSize, setFontSize, playing, setPlaying, floating, setFloating }) {
   const [chapter, setChapter] = useState(6);
   return (
     <section className="reader-page">
-      <ReaderToolbar onBack={() => setPage("library")} fontSize={fontSize} setFontSize={setFontSize} floating={floating} setFloating={setFloating} />
+      <DemoReaderToolbar onBack={() => setPage("library")} fontSize={fontSize} setFontSize={setFontSize} floating={floating} setFloating={setFloating} />
       <div className="reader-layout">
         <aside className="toc-panel"><div className="toc-title"><span>目录</span><small>9 章</small></div><div className="toc-list">{chapters.map((item, index) => <button key={item} className={chapter === index ? "selected" : ""} onClick={() => setChapter(index)}><span>{String(index + 1).padStart(2, "0")}</span>{item}</button>)}</div><div className="toc-footer"><UploadSimple /> 已同步阅读进度</div></aside>
         <article className="reading-sheet" style={{ "--reading-size": `${fontSize}px` }}><p className="chapter-index">CHAPTER 06</p><h1>运气的成分</h1><div className="title-rule" /><div className="reading-copy">{paragraphs.map((paragraph, index) => <p key={paragraph} className={index === 0 ? "speaking" : ""}>{paragraph}</p>)}</div><div className="page-count">126 / 298</div></article>
       </div>
-      <Player playing={playing} setPlaying={setPlaying} setFloating={setFloating} />
+      <DemoPlayer playing={playing} setPlaying={setPlaying} setFloating={setFloating} />
     </section>
   );
 }
@@ -318,6 +373,125 @@ function PasteModal({ onClose, onImport, demoMode }) {
   );
 }
 
+function sliceCodePoints(text, start, end) {
+  return Array.from(text).slice(start, end).join("");
+}
+
+const ReaderTextBlockView = memo(function ReaderTextBlockView({ block, highlightStart, highlightEnd, paragraphMode, firstLineIndent }) {
+  const hasHighlight = highlightStart !== null && highlightEnd !== null && highlightStart < highlightEnd;
+  const className = `reader-text-block mode-${paragraphMode} ${block.startsParagraph ? "paragraph-start" : "paragraph-continuation"}`;
+  const style = { textIndent: block.startsParagraph && firstLineIndent ? "2em" : 0 };
+  if (!hasHighlight) {
+    return <p className={className} style={style} data-reader-block data-start-offset={block.startOffset}>{block.text}</p>;
+  }
+  const codePointLength = Array.from(block.text).length;
+  const start = Math.max(0, Math.min(codePointLength, highlightStart - block.startOffset));
+  const end = Math.max(start, Math.min(codePointLength, highlightEnd - block.startOffset));
+  return (
+    <p className={className} style={style} data-reader-block data-start-offset={block.startOffset}>
+      {sliceCodePoints(block.text, 0, start)}<mark>{sliceCodePoints(block.text, start, end)}</mark>{sliceCodePoints(block.text, end, codePointLength)}
+    </p>
+  );
+});
+
+function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings }) {
+  const { settings } = data;
+  return (
+    <div className="reader-toolbar">
+      <div className="toolbar-group"><IconButton label="返回内容库" onClick={onBack}><ArrowLeft /></IconButton><IconButton label="目录" active={panelMode === "toc"} onClick={() => setPanelMode("toc")}><SidebarSimple /></IconButton><span className="toolbar-title">{data.book.title}</span></div>
+      <div className="toolbar-group toolbar-center"><IconButton label="缩小字号" onClick={() => onSettings({ fontSize: Math.max(12, settings.fontSize - 1) })}><Minus /></IconButton><span className="font-value">{settings.fontSize}</span><IconButton label="放大字号" onClick={() => onSettings({ fontSize: Math.min(40, settings.fontSize + 1) })}><Plus /></IconButton><button className="speed" onClick={() => onSettings({ paragraphMode: settings.paragraphMode % 3 + 1 })}><TextAa /> 排版 {settings.paragraphMode}</button></div>
+      <div className="toolbar-group"><IconButton label="书内搜索" active={panelMode === "search"} onClick={() => setPanelMode("search")}><MagnifyingGlass /></IconButton><IconButton label="书签" active={panelMode === "bookmarks"} onClick={() => setPanelMode("bookmarks")}><PushPin /></IconButton></div>
+    </div>
+  );
+}
+
+function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNavigate, onSettings, settings }) {
+  const [seekPercent, setSeekPercent] = useState(playback.position.progressPercent);
+  const seekingRef = useRef(false);
+  useEffect(() => {
+    if (!seekingRef.current) setSeekPercent(playback.position.progressPercent);
+  }, [playback.position.progressPercent]);
+  const playing = playback.status === "playing";
+  const disabled = Boolean(pendingCommand);
+  return (
+    <div className="player-bar">
+      <div className="player-copy"><strong>{chapterTitle}</strong><small>{playback.sentence ? `正在朗读：${playback.sentence.text}` : playback.status === "paused" ? "朗读已暂停" : "阅读进度已同步"}</small></div>
+      <div className="player-controls"><IconButton label="上一句" onClick={disabled ? undefined : () => onCommand("previousSentence")}><CaretLeft weight="bold" /></IconButton><button className="play-button" aria-label={playing ? "暂停" : "播放"} disabled={disabled} onClick={() => onCommand(playing ? "pause" : "play")}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句" onClick={disabled ? undefined : () => onCommand("nextSentence")}><CaretRight weight="bold" /></IconButton></div>
+      <div className="player-slider"><span>{seekPercent.toFixed(1)}%</span><input type="range" min="0" max="100" step="0.1" value={seekPercent} onPointerDown={() => { seekingRef.current = true; }} onChange={(event) => setSeekPercent(Number(event.target.value))} onPointerUp={(event) => { seekingRef.current = false; onNavigate({ kind: "percent", percent: Number(event.currentTarget.value) }); }} /><span>100%</span></div>
+      <div className="player-tools"><button className="speed" onClick={() => onSettings({ ttsRate: settings.ttsRate >= 300 ? 120 : settings.ttsRate + 20 })}>{settings.ttsRate}</button><IconButton label={`音量 ${settings.volume}`} onClick={() => onSettings({ volume: settings.volume >= 100 ? 50 : Math.min(100, settings.volume + 10) })}><SpeakerHigh /></IconButton><IconButton label="停止朗读" onClick={disabled ? undefined : () => onCommand("stop")}><X /></IconButton></div>
+    </div>
+  );
+}
+
+function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings }) {
+  const [panelMode, setPanelMode] = useState("toc");
+  const [query, setQuery] = useState("");
+  const scrollTimerRef = useRef(null);
+  const data = state.data;
+  const playback = data?.playback;
+  const windowData = data?.window;
+  const sentence = playback && windowData && playback.sentence?.chapterIndex === windowData.chapterIndex ? playback.sentence : null;
+  const chapterTitle = data?.book.chapters[data.position.chapterIndex]?.title || windowData?.chapterTitle || "";
+
+  useEffect(() => () => window.clearTimeout(scrollTimerRef.current), []);
+  useEffect(() => {
+    if (!sentence || !windowData) return;
+    const index = windowData.blocks.findIndex((block) => block.startOffset <= sentence.startOffset && block.endOffset >= sentence.startOffset);
+    if (index >= 0) document.getElementById(`native-reader-block-${index}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [sentence?.chapterIndex, sentence?.startOffset, windowData]);
+
+  if (state.phase === "opening") return <section className="reader-page reader-message"><div><strong>正在打开真实内容…</strong><span>正在恢复章节与阅读进度</span></div></section>;
+  if (state.phase !== "ready" || !data) return <section className="reader-page reader-message"><div><strong>无法打开阅读器</strong><span>{state.error || "请返回内容库后重试。"}</span><button className="secondary-button" onClick={onBack}>返回内容库</button></div></section>;
+
+  const changePanel = (mode) => {
+    setPanelMode(mode);
+    if (mode === "bookmarks" && state.bookmarks.status === "idle") onLoadBookmarks();
+  };
+  const submitSearch = (event) => {
+    event.preventDefault();
+    if (query.trim()) onSearch(query.trim());
+  };
+  const handleScroll = (event) => {
+    if (playback.status === "playing") return;
+    const container = event.currentTarget;
+    window.clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = window.setTimeout(() => {
+      const blocks = [...container.querySelectorAll("[data-reader-block]")];
+      const top = container.getBoundingClientRect().top;
+      const visible = blocks.find((node) => node.getBoundingClientRect().bottom >= top + 8) || blocks.at(-1);
+      if (visible) onUpdatePosition(windowData.chapterIndex, Number(visible.dataset.startOffset));
+    }, 500);
+  };
+
+  return (
+    <section className="reader-page native-reader">
+      <NativeReaderToolbar data={data} panelMode={panelMode} setPanelMode={changePanel} onBack={onBack} onSettings={onSettings} />
+      <div className="reader-layout">
+        <aside className="toc-panel">
+          <div className="toc-title"><span>{panelMode === "toc" ? "目录" : panelMode === "search" ? "书内搜索" : "书签"}</span><small>{panelMode === "toc" ? `${data.book.chapters.length} 章` : ""}</small></div>
+          {panelMode === "toc" ? <div className="toc-list">{data.book.chapters.map((chapter) => <button key={chapter.index} className={data.position.chapterIndex === chapter.index ? "selected" : ""} onClick={() => onNavigate({ kind: "position", chapterIndex: chapter.index, charOffset: 0 })}><span>{String(chapter.index + 1).padStart(2, "0")}</span>{chapter.title}</button>)}</div> : null}
+          {panelMode === "search" ? <div className="reader-side-content"><form onSubmit={submitSearch}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词后回车" /><button className="primary-button" type="submit">搜索</button></form>{state.search.status === "loading" ? <p>正在搜索真实正文…</p> : null}{state.search.error ? <p className="reader-side-error">{state.search.error}</p> : null}{state.search.page?.results.map((result) => <button key={result.id} className="reader-side-result" onClick={() => onNavigate({ kind: "position", chapterIndex: result.chapterIndex, charOffset: result.startOffset })}><strong>{result.chapterTitle}</strong><span>{result.excerpt}</span></button>)}{state.search.status === "ready" && state.search.page?.total === 0 ? <p>没有匹配内容</p> : null}</div> : null}
+          {panelMode === "bookmarks" ? <div className="reader-side-content">{playback.sentence ? <button className="primary-button bookmark-current" onClick={() => onAddBookmark(playback.sentence)}>收藏当前句</button> : <p>开始朗读后可收藏当前句。</p>}{state.bookmarks.status === "loading" ? <p>正在读取书签…</p> : null}{state.bookmarks.error ? <p className="reader-side-error">{state.bookmarks.error}</p> : null}{state.bookmarks.page?.items.map((bookmark) => <div key={bookmark.id} className="reader-bookmark"><button onClick={() => onNavigate({ kind: "position", chapterIndex: bookmark.chapterIndex, charOffset: bookmark.startOffset })}><strong>{bookmark.chapterTitle}</strong><span>{bookmark.text}</span></button><button aria-label={`删除书签 ${bookmark.text}`} onClick={() => onRemoveBookmark(bookmark.id)}><X /></button></div>)}{state.bookmarks.status === "ready" && state.bookmarks.page?.total === 0 ? <p>暂无书签</p> : null}</div> : null}
+          <div className="toc-footer"><UploadSimple /> 已同步阅读进度</div>
+        </aside>
+        <article className={`reading-sheet paragraph-mode-${data.settings.paragraphMode}`} style={{ "--reading-size": `${data.settings.fontSize}px`, "--reading-line-height": data.settings.lineSpacing, fontFamily: data.settings.fontFamily }} onScroll={handleScroll}>
+          <p className="chapter-index">CHAPTER {String(windowData.chapterIndex + 1).padStart(2, "0")}</p><h1>{windowData.chapterTitle}</h1><div className="title-rule" />
+          {state.windowLoading ? <div className="reader-window-loading">正在加载正文窗口…</div> : null}
+          {windowData.hasBefore ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowStartOffset)}>加载前文</button> : null}
+          <div className="reading-copy">{windowData.blocks.map((block, index) => {
+            const highlightStart = sentence && sentence.endOffset > block.startOffset && sentence.startOffset < block.endOffset ? sentence.startOffset : null;
+            const highlightEnd = highlightStart === null ? null : sentence.endOffset;
+            return <div id={`native-reader-block-${index}`} key={block.id}><ReaderTextBlockView block={block} highlightStart={highlightStart} highlightEnd={highlightEnd} paragraphMode={data.settings.paragraphMode} firstLineIndent={data.settings.firstLineIndent} /></div>;
+          })}</div>
+          {windowData.hasAfter ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowEndOffset)}>加载后文</button> : null}
+          <div className="page-count">{data.position.progressPercent.toFixed(1)}%</div>
+        </article>
+      </div>
+      <NativePlayer playback={playback} chapterTitle={chapterTitle} pendingCommand={state.pendingCommand} onCommand={onCommand} onNavigate={onNavigate} onSettings={onSettings} settings={data.settings} />
+    </section>
+  );
+}
+
 function ImportConfirmationModal({ selection, onClose, onStart }) {
   const [confirmLargeFiles, setConfirmLargeFiles] = useState(false);
   const [duplicateMode, setDuplicateMode] = useState("cancel");
@@ -355,6 +529,14 @@ export function App() {
   const [playing, setPlaying] = useState(demoQaFloating);
   const [bilingual, setBilingual] = useState(false);
   const [fontSize, setFontSize] = useState(21);
+  const [readerState, dispatchReader] = useReducer(readerReducer, EMPTY_READER_STATE);
+  const readerOpenRequestRef = useRef("");
+  const readerSessionRef = useRef("");
+  const readerDataRef = useRef(null);
+  const playbackSequenceRef = useRef(-1);
+  const readerSearchRequestRef = useRef("");
+  const pendingOpenIntentRef = useRef(null);
+  const consumedOpenIntentsRef = useRef(new Set());
 
   useEffect(() => {
     let active = true;
@@ -418,15 +600,77 @@ export function App() {
         setPasteOpen(false);
         setImportSelection(null);
         setOpenAfterImportBookId(event.openAfterImportBookId);
+        if (connected.mode === "native" && event.openAfterImportBookId) pendingOpenIntentRef.current = { jobId: event.jobId, bookId: event.openAfterImportBookId, status: "waitingRefresh" };
         setPage("library");
         if (connected.mode === "demo") {
           setBooks([...connected.initialState.data.library.books]);
           return;
         }
         try {
-          attachConnection(await connectBridge());
+          const refreshed = await connectBridge();
+          attachConnection(refreshed);
+          const intent = pendingOpenIntentRef.current;
+          const intentKey = intent ? `${intent.jobId}:${intent.bookId}` : "";
+          const canOpen = intent
+            && refreshed.initialState.data.capabilities.reader
+            && refreshed.initialState.data.library.books.some((book) => book.id === intent.bookId)
+            && !consumedOpenIntentsRef.current.has(intentKey);
+          if (canOpen) {
+            intent.status = "opening";
+            consumedOpenIntentsRef.current.add(intentKey);
+            await beginReaderOpen(refreshed, intent.bookId);
+          }
         } catch (error) {
           if (active) setBridgeError(error.message || "导入完成，但内容库刷新失败。");
+        }
+      });
+      connected.onReaderOpened((event) => {
+        if (!active || event.requestId !== readerOpenRequestRef.current) return;
+        if (!event.ok || !event.data) {
+          const message = event.error?.message || "无法打开真实内容。";
+          dispatchReader({ type: "FAILED", error: message });
+          readerSessionRef.current = "";
+          readerDataRef.current = null;
+          pendingOpenIntentRef.current = null;
+          setImportState({ ...EMPTY_IMPORT_STATE, status: "failed", message, tone: "error" });
+          setPage("library");
+          return;
+        }
+        readerSessionRef.current = event.data.sessionId;
+        readerDataRef.current = event.data;
+        playbackSequenceRef.current = -1;
+        pendingOpenIntentRef.current = null;
+        dispatchReader({ type: "OPENED", requestId: event.requestId, data: event.data });
+        setPage("reader");
+      });
+      connected.onReaderSearchFinished((event) => {
+        if (!active || event.sessionId !== readerSessionRef.current || event.requestId !== readerSearchRequestRef.current) return;
+        if (event.ok && event.data) dispatchReader({ type: "SEARCH_RESULT", page: event.data });
+        else dispatchReader({ type: "SEARCH_ERROR", error: event.error?.message || "书内搜索失败。" });
+      });
+      connected.onReaderPlaybackChanged(async (event) => {
+        if (!active || event.sessionId !== readerSessionRef.current || event.sequence <= playbackSequenceRef.current) return;
+        playbackSequenceRef.current = event.sequence;
+        const current = readerDataRef.current;
+        if (!current) return;
+        readerDataRef.current = { ...current, position: event.playback.position, playback: event.playback };
+        dispatchReader({ type: "PLAYBACK", playback: event.playback });
+        if (event.error) setBridgeError(event.error.message);
+        const sentence = event.playback.sentence;
+        const currentWindow = readerDataRef.current.window;
+        const outsideWindow = sentence && (
+          sentence.chapterIndex !== currentWindow.chapterIndex
+          || sentence.startOffset < currentWindow.windowStartOffset
+          || sentence.startOffset >= currentWindow.windowEndOffset
+        );
+        if (!outsideWindow) return;
+        try {
+          const response = await connected.reader.getWindow({ sessionId: event.sessionId, chapterIndex: sentence.chapterIndex, anchorOffset: sentence.startOffset });
+          if (!active || event.sessionId !== readerSessionRef.current) return;
+          readerDataRef.current = { ...readerDataRef.current, window: response.data };
+          startTransition(() => dispatchReader({ type: "WINDOW", window: response.data }));
+        } catch (error) {
+          if (active) setBridgeError(error.message || "无法加载当前朗读位置。");
         }
       });
       setLibraryLoading(false);
@@ -446,6 +690,24 @@ export function App() {
       connectionRef.current = null;
     };
   }, []);
+
+  const beginReaderOpen = async (connection, bookId) => {
+    readerOpenRequestRef.current = "";
+    readerSessionRef.current = "";
+    readerDataRef.current = null;
+    dispatchReader({ type: "OPENING", bookId });
+    setPage("reader");
+    try {
+      const response = await connection.reader.openBook(bookId);
+      readerOpenRequestRef.current = response.data.requestId;
+      dispatchReader({ type: "OPEN_ACCEPTED", requestId: response.data.requestId });
+    } catch (error) {
+      const message = error.message || "无法打开真实内容。";
+      dispatchReader({ type: "FAILED", error: message });
+      setImportState({ ...EMPTY_IMPORT_STATE, status: "failed", message, tone: "error" });
+      setPage("library");
+    }
+  };
 
   const selectFiles = async () => {
     const connection = connectionRef.current;
@@ -508,8 +770,135 @@ export function App() {
       setPasteOpen(false);
       return;
     }
+    const connection = connectionRef.current;
+    if (!connection || !capabilities.reader) {
+      setImportState({ ...EMPTY_IMPORT_STATE, status: "unavailable", message: "真实阅读器当前不可用。", tone: "warning" });
+      return;
+    }
     setOpenAfterImportBookId(book.id);
-    setImportState({ ...EMPTY_IMPORT_STATE, status: "ready", message: `「${book.title}」已就绪；真实阅读器将在阶段 3 接入。`, tone: "info" });
+    setPasteOpen(false);
+    beginReaderOpen(connection, book.id);
+  };
+  const getReaderWindow = async (chapterIndex, anchorOffset) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    dispatchReader({ type: "WINDOW_LOADING" });
+    try {
+      const response = await connection.reader.getWindow({ sessionId, chapterIndex, anchorOffset });
+      if (sessionId !== readerSessionRef.current) return;
+      readerDataRef.current = { ...readerDataRef.current, window: response.data };
+      startTransition(() => dispatchReader({ type: "WINDOW", window: response.data }));
+    } catch (error) {
+      dispatchReader({ type: "FAILED", error: error.message || "正文窗口加载失败。" });
+    }
+  };
+  const navigateReader = async (target) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    dispatchReader({ type: "WINDOW_LOADING" });
+    try {
+      const response = await connection.reader.navigate({ sessionId, target });
+      if (sessionId !== readerSessionRef.current) return;
+      readerDataRef.current = { ...readerDataRef.current, position: response.data.position, window: response.data.window, playback: response.data.playback };
+      startTransition(() => dispatchReader({ type: "NAVIGATED", data: response.data }));
+    } catch (error) {
+      setBridgeError(error.message || "无法跳转到目标位置。");
+      dispatchReader({ type: "WINDOW", window: readerDataRef.current.window });
+    }
+  };
+  const updateReaderPosition = async (chapterIndex, charOffset) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    try {
+      const response = await connection.reader.updatePosition({ sessionId, chapterIndex, charOffset });
+      if (sessionId !== readerSessionRef.current || !response.data.updated) return;
+      readerDataRef.current = { ...readerDataRef.current, position: response.data.position, playback: { ...readerDataRef.current.playback, position: response.data.position } };
+      dispatchReader({ type: "POSITION", position: response.data.position });
+    } catch (error) {
+      setBridgeError(error.message || "阅读进度同步失败。");
+    }
+  };
+  const searchReader = async (query) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    dispatchReader({ type: "SEARCH_LOADING", query });
+    try {
+      const response = await connection.reader.search({ sessionId, query, cursor: "" });
+      readerSearchRequestRef.current = response.data.requestId;
+      dispatchReader({ type: "SEARCH_LOADING", query, requestId: response.data.requestId });
+    } catch (error) {
+      dispatchReader({ type: "SEARCH_ERROR", error: error.message || "书内搜索失败。" });
+    }
+  };
+  const loadReaderBookmarks = async () => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    dispatchReader({ type: "BOOKMARKS_LOADING" });
+    try {
+      const response = await connection.reader.listBookmarks({ sessionId, cursor: "" });
+      if (sessionId === readerSessionRef.current) dispatchReader({ type: "BOOKMARKS", page: response.data });
+    } catch (error) {
+      dispatchReader({ type: "BOOKMARKS_ERROR", error: error.message || "书签读取失败。" });
+    }
+  };
+  const addReaderBookmark = async (sentence) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    try {
+      await connection.reader.addBookmark({ sessionId, chapterIndex: sentence.chapterIndex, startOffset: sentence.startOffset, endOffset: sentence.endOffset, note: "" });
+      await loadReaderBookmarks();
+    } catch (error) {
+      dispatchReader({ type: "BOOKMARKS_ERROR", error: error.message || "书签添加失败。" });
+    }
+  };
+  const removeReaderBookmark = async (bookmarkId) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    try {
+      await connection.reader.removeBookmark({ sessionId, bookmarkId });
+      await loadReaderBookmarks();
+    } catch (error) {
+      dispatchReader({ type: "BOOKMARKS_ERROR", error: error.message || "书签删除失败。" });
+    }
+  };
+  const controlReaderPlayback = async (command) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    dispatchReader({ type: "PLAYBACK_PENDING", command });
+    try {
+      const response = await connection.reader.controlPlayback({ sessionId, command });
+      if (!response.data.accepted) dispatchReader({ type: "PLAYBACK", playback: readerDataRef.current.playback });
+    } catch (error) {
+      dispatchReader({ type: "PLAYBACK", playback: readerDataRef.current.playback });
+      setBridgeError(error.message || "播放控制失败。");
+    }
+  };
+  const updateReaderSettings = async (patch) => {
+    const connection = connectionRef.current;
+    const sessionId = readerSessionRef.current;
+    if (!connection || !sessionId) return;
+    try {
+      const response = await connection.reader.updateSettings({ sessionId, patch });
+      readerDataRef.current = { ...readerDataRef.current, settings: response.data };
+      dispatchReader({ type: "SETTINGS", settings: response.data });
+    } catch (error) {
+      setBridgeError(error.message || "阅读设置保存失败。");
+    }
+  };
+  const navigatePage = (nextPage) => {
+    if (nextPage !== "reader" || bridgeMode === "demo" || readerState.phase === "ready") {
+      setPage(nextPage);
+      return;
+    }
+    setImportState({ ...EMPTY_IMPORT_STATE, status: "ready", message: "请先从内容库选择一本真实内容。", tone: "info" });
     setPage("library");
   };
   const showUnavailable = (message) => setImportState({ ...EMPTY_IMPORT_STATE, status: "unavailable", message, tone: "info" });
@@ -519,6 +908,6 @@ export function App() {
     ? { fileImport: true, pasteImport: true, webImport: true, audioImport: true }
     : capabilities;
   return (
-    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""}`}>{desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}<div className="mac-window"><MacTitlebar controls={windowControls} desktopMode={desktopMode} /><div className="app-body"><Rail page={page} setPage={setPage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} /><main className="content-area">{page === "reader" && bridgeMode === "demo" ? <Reader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} /> : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}</main></div></div>{floating && <FloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} />}{pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}{importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}</div>
+    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""}`}>{desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}<div className="mac-window"><MacTitlebar controls={windowControls} desktopMode={desktopMode} /><div className="app-body"><Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} /><main className="content-area">{page === "reader" && bridgeMode === "demo" ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} /> : page === "reader" && bridgeMode === "native" ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} /> : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}</main></div></div>{floating && bridgeMode === "demo" ? <FloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}{pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}{importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}</div>
   );
 }

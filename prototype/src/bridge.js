@@ -7,6 +7,26 @@ const DEMO_BOOKS = [
   { id: "demo-4", title: "星火", author: "", format: "EPUB", progressPercent: 12, chapterIndex: 0, chapterCount: 8, currentChapterTitle: "序章 · 启程", lastReadAt: null, totalChars: 0, coverUrl: "covers/library.png" },
 ];
 
+const DEMO_READER_TEXT = "每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。\n财富并不只是一串数字，它更像一种选择权：你能决定把时间留给谁，也能决定拒绝什么。\n创造财富的法则，往往只是代表了财富创造的方式。";
+
+function demoReaderSettings() {
+  return { fontFamily: "Songti SC", fontSize: 21, lineSpacing: 2, paragraphMode: 1, firstLineIndent: false, ttsRate: 200, ttsVoiceId: "demo", volume: 100, sentenceGapSeconds: 0.1 };
+}
+
+function demoPlayback(position = { chapterIndex: 0, charOffset: 0, progressPercent: 0 }, status = "idle") {
+  return { status, position, sentence: null, requestedBackend: "sapi", activeBackend: status === "idle" ? null : "sapi", fallbackActive: false };
+}
+
+function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
+  let offset = 0;
+  const blocks = DEMO_READER_TEXT.split("\n").map((text, index) => {
+    const block = { id: `0:${offset}:${offset + text.length}`, startOffset: offset, endOffset: offset + text.length, text, startsParagraph: true, endsParagraph: true };
+    offset += text.length + (index < 2 ? 1 : 0);
+    return block;
+  });
+  return { sessionId, bookId, chapterIndex: 0, chapterTitle: "第六章　运气的成分", chapterCharCount: DEMO_READER_TEXT.length, anchorOffset, windowStartOffset: 0, windowEndOffset: DEMO_READER_TEXT.length, hasBefore: false, hasAfter: false, blocks };
+}
+
 const EMPTY_DATA = {
   library: { books: [], total: 0 },
   window: { isMaximized: false },
@@ -36,6 +56,20 @@ const BOOK_FIELDS = {
 };
 
 const DUPLICATE_MODES = new Set(["cancel", "overwrite", "reparse"]);
+const PLAYBACK_STATUSES = new Set(["idle", "playing", "paused", "finished", "error"]);
+const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", "nextSentence"]);
+const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "finished", "fallback", "error"]);
+const READER_SETTING_FIELDS = {
+  fontFamily: "string",
+  fontSize: "number",
+  lineSpacing: "number",
+  paragraphMode: "number",
+  firstLineIndent: "boolean",
+  ttsRate: "number",
+  ttsVoiceId: "string",
+  volume: "number",
+  sentenceGapSeconds: "number",
+};
 
 function validBridgeError(error) {
   return error === null || Boolean(
@@ -147,6 +181,10 @@ function nonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function nonNegativeInteger(value) {
+  return nonNegativeNumber(value) && Number.isInteger(value);
+}
+
 function validImportSelection(data) {
   return Boolean(
     data
@@ -220,6 +258,208 @@ function validImportFinished(event) {
       && typeof item.bookId === "string"
       && validBridgeError(item.error)
     )),
+  );
+}
+
+function validReaderPosition(position) {
+  return Boolean(
+    position
+    && nonNegativeInteger(position.chapterIndex)
+    && nonNegativeInteger(position.charOffset)
+    && nonNegativeNumber(position.progressPercent)
+    && position.progressPercent <= 100,
+  );
+}
+
+function validReaderWindow(data) {
+  const blocksValid = Array.isArray(data?.blocks)
+    && data.blocks.length <= 120
+    && data.blocks.every((block, index) => (
+      block
+      && typeof block.id === "string" && block.id
+      && nonNegativeInteger(block.startOffset)
+      && nonNegativeInteger(block.endOffset)
+      && block.startOffset <= block.endOffset
+      && block.startOffset >= data.windowStartOffset
+      && block.endOffset <= data.windowEndOffset
+      && (index === 0 || data.blocks[index - 1].endOffset <= block.startOffset)
+      && typeof block.text === "string"
+      && typeof block.startsParagraph === "boolean"
+      && typeof block.endsParagraph === "boolean"
+    ));
+  return Boolean(
+    data
+    && typeof data.sessionId === "string" && data.sessionId
+    && typeof data.bookId === "string" && data.bookId
+    && nonNegativeInteger(data.chapterIndex)
+    && typeof data.chapterTitle === "string"
+    && nonNegativeInteger(data.chapterCharCount)
+    && nonNegativeInteger(data.anchorOffset)
+    && nonNegativeInteger(data.windowStartOffset)
+    && nonNegativeInteger(data.windowEndOffset)
+    && data.windowStartOffset <= data.windowEndOffset
+    && data.windowEndOffset <= data.chapterCharCount
+    && data.anchorOffset <= data.chapterCharCount
+    && typeof data.hasBefore === "boolean"
+    && typeof data.hasAfter === "boolean"
+    && blocksValid,
+  );
+}
+
+function validReaderSettings(settings) {
+  return Boolean(
+    settings
+    && Object.entries(READER_SETTING_FIELDS).every(([field, type]) => typeof settings[field] === type)
+    && [1, 2, 3].includes(settings.paragraphMode),
+  );
+}
+
+function validReaderSentence(sentence) {
+  return sentence === null || Boolean(
+    sentence
+    && nonNegativeInteger(sentence.chapterIndex)
+    && nonNegativeInteger(sentence.startOffset)
+    && nonNegativeInteger(sentence.endOffset)
+    && sentence.startOffset <= sentence.endOffset
+    && typeof sentence.text === "string",
+  );
+}
+
+function validReaderPlayback(playback) {
+  return Boolean(
+    playback
+    && PLAYBACK_STATUSES.has(playback.status)
+    && validReaderPosition(playback.position)
+    && validReaderSentence(playback.sentence)
+    && ["sapi", "edge"].includes(playback.requestedBackend)
+    && (playback.activeBackend === null || ["sapi", "edge"].includes(playback.activeBackend))
+    && typeof playback.fallbackActive === "boolean",
+  );
+}
+
+function validReaderOpenData(data) {
+  return Boolean(
+    data
+    && typeof data.sessionId === "string" && data.sessionId
+    && data.book
+    && typeof data.book.id === "string" && data.book.id
+    && typeof data.book.title === "string"
+    && typeof data.book.author === "string"
+    && typeof data.book.format === "string"
+    && nonNegativeInteger(data.book.totalChars)
+    && Array.isArray(data.book.chapters)
+    && data.book.chapters.every((chapter) => (
+      chapter
+      && nonNegativeInteger(chapter.index)
+      && typeof chapter.title === "string"
+      && nonNegativeInteger(chapter.charCount)
+    ))
+    && validReaderPosition(data.position)
+    && validReaderWindow(data.window)
+    && data.window.sessionId === data.sessionId
+    && data.window.bookId === data.book.id
+    && validReaderSettings(data.settings)
+    && validReaderPlayback(data.playback)
+    && nonNegativeNumber(data.bookmarkCount),
+  );
+}
+
+function validReaderOpenStart(data) {
+  return Boolean(data && typeof data.requestId === "string" && data.requestId && typeof data.bookId === "string" && data.bookId && data.state === "loading");
+}
+
+function validReaderOpenedEvent(event) {
+  return Boolean(
+    event
+    && event.schemaVersion === SCHEMA_VERSION
+    && typeof event.requestId === "string" && event.requestId
+    && typeof event.bookId === "string" && event.bookId
+    && typeof event.ok === "boolean"
+    && validBridgeError(event.error)
+    && (event.ok ? validReaderOpenData(event.data) && event.error === null : event.data === null && event.error !== null),
+  );
+}
+
+function validReaderNavigate(data) {
+  return Boolean(data && validReaderPosition(data.position) && validReaderWindow(data.window) && validReaderPlayback(data.playback));
+}
+
+function validReaderPositionUpdate(data) {
+  return Boolean(data && typeof data.updated === "boolean" && validReaderPosition(data.position));
+}
+
+function validReaderSearchResult(item) {
+  return Boolean(
+    item
+    && typeof item.id === "string" && item.id
+    && nonNegativeInteger(item.chapterIndex)
+    && typeof item.chapterTitle === "string"
+    && nonNegativeInteger(item.startOffset)
+    && nonNegativeInteger(item.endOffset)
+    && item.startOffset <= item.endOffset
+    && nonNegativeInteger(item.excerptStartOffset)
+    && typeof item.excerpt === "string",
+  );
+}
+
+function validReaderSearchPage(data) {
+  return Boolean(data && typeof data.query === "string" && nonNegativeInteger(data.total) && typeof data.nextCursor === "string" && Array.isArray(data.results) && data.results.length <= data.total && data.results.every(validReaderSearchResult));
+}
+
+function validReaderSearchStart(data) {
+  return Boolean(data && typeof data.requestId === "string" && data.requestId && data.state === "searching");
+}
+
+function validReaderSearchFinished(event) {
+  return Boolean(
+    event
+    && event.schemaVersion === SCHEMA_VERSION
+    && typeof event.requestId === "string" && event.requestId
+    && typeof event.sessionId === "string" && event.sessionId
+    && typeof event.ok === "boolean"
+    && validBridgeError(event.error)
+    && (event.ok ? validReaderSearchPage(event.data) && event.error === null : event.data === null && event.error !== null),
+  );
+}
+
+function validReaderBookmark(item) {
+  return Boolean(
+    item
+    && typeof item.id === "string" && item.id
+    && nonNegativeInteger(item.chapterIndex)
+    && typeof item.chapterTitle === "string"
+    && nonNegativeInteger(item.startOffset)
+    && nonNegativeInteger(item.endOffset)
+    && item.startOffset <= item.endOffset
+    && typeof item.text === "string"
+    && typeof item.note === "string"
+    && nonNegativeNumber(item.createdAt),
+  );
+}
+
+function validReaderBookmarkPage(data) {
+  return Boolean(data && nonNegativeInteger(data.total) && typeof data.nextCursor === "string" && Array.isArray(data.items) && data.items.length <= data.total && data.items.every(validReaderBookmark));
+}
+
+function validReaderBookmarkRemove(data) {
+  return Boolean(data && typeof data.bookmarkId === "string" && typeof data.removed === "boolean");
+}
+
+function validReaderPlaybackCommand(data) {
+  return Boolean(data && typeof data.commandId === "string" && data.commandId && typeof data.accepted === "boolean");
+}
+
+function validReaderPlaybackEvent(event) {
+  return Boolean(
+    event
+    && event.schemaVersion === SCHEMA_VERSION
+    && typeof event.sessionId === "string" && event.sessionId
+    && typeof event.bookId === "string" && event.bookId
+    && nonNegativeNumber(event.sequence)
+    && typeof event.commandId === "string"
+    && PLAYBACK_REASONS.has(event.reason)
+    && validReaderPlayback(event.playback)
+    && validBridgeError(event.error),
   );
 }
 
@@ -322,6 +562,66 @@ function nativeImports(nativeBridge) {
   };
 }
 
+function validSessionInput(input) {
+  return Boolean(input && typeof input.sessionId === "string" && input.sessionId);
+}
+
+function invokeReader(nativeBridge, method, input, validateData) {
+  return invokeWithResult(nativeBridge, method, [JSON.stringify(input)])
+    .then((raw) => parseBridgeResponse(raw, validateData));
+}
+
+function nativeReader(nativeBridge) {
+  return {
+    async openBook(bookId) {
+      if (typeof bookId !== "string" || !bookId) throw new BridgeProtocolError("书籍编号无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(await invokeWithResult(nativeBridge, "openReaderBook", [bookId]), validReaderOpenStart);
+    },
+    async getWindow(input) {
+      if (!validSessionInput(input) || !nonNegativeNumber(input.chapterIndex) || !nonNegativeNumber(input.anchorOffset)) throw new BridgeProtocolError("正文窗口参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "getReaderWindow", input, validReaderWindow);
+    },
+    async navigate(input) {
+      const target = input?.target;
+      const validTarget = target?.kind === "position"
+        ? nonNegativeNumber(target.chapterIndex) && nonNegativeNumber(target.charOffset)
+        : target?.kind === "percent" && nonNegativeNumber(target.percent) && target.percent <= 100;
+      if (!validSessionInput(input) || !validTarget) throw new BridgeProtocolError("阅读跳转参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "navigateReader", input, validReaderNavigate);
+    },
+    async updatePosition(input) {
+      if (!validSessionInput(input) || !nonNegativeNumber(input.chapterIndex) || !nonNegativeNumber(input.charOffset)) throw new BridgeProtocolError("阅读进度参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "updateReaderPosition", input, validReaderPositionUpdate);
+    },
+    async search(input) {
+      if (!validSessionInput(input) || typeof input.query !== "string" || typeof input.cursor !== "string") throw new BridgeProtocolError("书内搜索参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "searchReader", input, validReaderSearchStart);
+    },
+    async listBookmarks(input) {
+      if (!validSessionInput(input) || typeof input.cursor !== "string") throw new BridgeProtocolError("书签查询参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "listReaderBookmarks", input, validReaderBookmarkPage);
+    },
+    async addBookmark(input) {
+      if (!validSessionInput(input) || !nonNegativeNumber(input.chapterIndex) || !nonNegativeNumber(input.startOffset) || !nonNegativeNumber(input.endOffset) || input.startOffset > input.endOffset || typeof input.note !== "string") throw new BridgeProtocolError("书签参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "addReaderBookmark", input, validReaderBookmark);
+    },
+    async removeBookmark(input) {
+      if (!validSessionInput(input) || typeof input.bookmarkId !== "string" || !input.bookmarkId) throw new BridgeProtocolError("书签删除参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "removeReaderBookmark", input, validReaderBookmarkRemove);
+    },
+    async controlPlayback(input) {
+      if (!validSessionInput(input) || !PLAYBACK_COMMANDS.has(input.command)) throw new BridgeProtocolError("播放控制参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "controlReaderPlayback", input, validReaderPlaybackCommand);
+    },
+    async updateSettings(input) {
+      const patch = input?.patch;
+      const validPatch = patch && Object.entries(patch).every(([field, value]) => READER_SETTING_FIELDS[field] === typeof value);
+      if (!validSessionInput(input) || !validPatch || ("paragraphMode" in patch && ![1, 2, 3].includes(patch.paragraphMode))) throw new BridgeProtocolError("阅读设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return invokeReader(nativeBridge, "updateReaderSettings", input, validReaderSettings);
+    },
+  };
+}
+
 function nativeControls(nativeBridge) {
   return {
     minimizeWindow: () => nativeBridge.minimizeWindow(),
@@ -349,6 +649,7 @@ function createNativeConnection(nativeBridge, initialState) {
     initialState,
     controls: nativeControls(nativeBridge),
     imports: nativeImports(nativeBridge),
+    reader: nativeReader(nativeBridge),
     onBridgeError(callback) {
       bridgeErrorCallbacks.add(callback);
       signalSubscription(nativeBridge.bridgeError, callback, subscriptions);
@@ -375,6 +676,33 @@ function createNativeConnection(nativeBridge, initialState) {
         }
       }, subscriptions);
     },
+    onReaderOpened(callback) {
+      signalSubscription(nativeBridge.readerOpened, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validReaderOpenedEvent, "阅读器打开事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
+    onReaderSearchFinished(callback) {
+      signalSubscription(nativeBridge.readerSearchFinished, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validReaderSearchFinished, "书内搜索事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
+    onReaderPlaybackChanged(callback) {
+      signalSubscription(nativeBridge.readerPlaybackChanged, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validReaderPlaybackEvent, "播放状态事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
     dispose() {
       subscriptions.splice(0).forEach((disconnect) => disconnect());
     },
@@ -393,8 +721,16 @@ function createDemoConnection() {
   const initialState = createDemoInitialState();
   const progressCallbacks = new Set();
   const finishedCallbacks = new Set();
+  const readerOpenedCallbacks = new Set();
+  const readerSearchCallbacks = new Set();
+  const readerPlaybackCallbacks = new Set();
   const jobs = new Map();
   let jobSequence = 0;
+  let readerSequence = 0;
+  let demoSessionId = "";
+  let demoBookId = "";
+  let demoPosition = { chapterIndex: 0, charOffset: 0, progressPercent: 0 };
+  let demoPlaybackState = demoPlayback(demoPosition);
 
   const emit = (callbacks, payload) => callbacks.forEach((callback) => callback(payload));
   const response = (data) => ({ schemaVersion: SCHEMA_VERSION, ok: true, data, error: null });
@@ -529,15 +865,80 @@ function createDemoConnection() {
         return response({ jobId, cancelRequested: Boolean(job) });
       },
     },
+    reader: {
+      async openBook(bookId) {
+        const requestId = `demo-reader-request-${++readerSequence}`;
+        demoSessionId = `demo-reader-session-${readerSequence}`;
+        demoBookId = bookId;
+        demoPosition = { chapterIndex: 0, charOffset: 0, progressPercent: 0 };
+        demoPlaybackState = demoPlayback(demoPosition);
+        setTimeout(() => emit(readerOpenedCallbacks, {
+          schemaVersion: SCHEMA_VERSION,
+          requestId,
+          bookId,
+          ok: true,
+          data: {
+            sessionId: demoSessionId,
+            book: { id: bookId, title: DEMO_BOOKS.find((book) => book.id === bookId)?.title || "演示内容", author: "", format: "EPUB", totalChars: DEMO_READER_TEXT.length, chapters: [{ index: 0, title: "第六章　运气的成分", charCount: DEMO_READER_TEXT.length }] },
+            position: demoPosition,
+            window: demoReaderWindow(demoSessionId, bookId),
+            settings: demoReaderSettings(),
+            playback: demoPlaybackState,
+            bookmarkCount: 0,
+          },
+          error: null,
+        }), 0);
+        return response({ requestId, bookId, state: "loading" });
+      },
+      async getWindow(input) { return response(demoReaderWindow(input.sessionId, demoBookId, input.anchorOffset)); },
+      async navigate(input) {
+        const target = input.target.kind === "percent"
+          ? { chapterIndex: 0, charOffset: Math.round(DEMO_READER_TEXT.length * input.target.percent / 100), progressPercent: input.target.percent }
+          : { chapterIndex: input.target.chapterIndex, charOffset: input.target.charOffset, progressPercent: Math.round(input.target.charOffset / Math.max(1, DEMO_READER_TEXT.length) * 1000) / 10 };
+        demoPosition = target;
+        demoPlaybackState = { ...demoPlaybackState, position: target };
+        return response({ position: target, window: demoReaderWindow(input.sessionId, demoBookId, target.charOffset), playback: demoPlaybackState });
+      },
+      async updatePosition(input) {
+        demoPosition = { chapterIndex: input.chapterIndex, charOffset: input.charOffset, progressPercent: Math.round(input.charOffset / Math.max(1, DEMO_READER_TEXT.length) * 1000) / 10 };
+        demoPlaybackState = { ...demoPlaybackState, position: demoPosition };
+        return response({ updated: true, position: demoPosition });
+      },
+      async search(input) {
+        const requestId = `demo-search-${++readerSequence}`;
+        setTimeout(() => {
+          const index = DEMO_READER_TEXT.indexOf(input.query);
+          emit(readerSearchCallbacks, { schemaVersion: SCHEMA_VERSION, requestId, sessionId: input.sessionId, ok: true, data: { query: input.query, total: index >= 0 ? 1 : 0, nextCursor: "", results: index >= 0 ? [{ id: `demo-result-${index}`, chapterIndex: 0, chapterTitle: "第六章　运气的成分", startOffset: index, endOffset: index + input.query.length, excerptStartOffset: Math.max(0, index - 12), excerpt: DEMO_READER_TEXT.slice(Math.max(0, index - 12), index + input.query.length + 18) }] : [] }, error: null });
+        }, 0);
+        return response({ requestId, state: "searching" });
+      },
+      async listBookmarks() { return response({ total: 0, nextCursor: "", items: [] }); },
+      async addBookmark(input) { return response({ id: `demo-bookmark-${Date.now()}`, chapterIndex: input.chapterIndex, chapterTitle: "第六章　运气的成分", startOffset: input.startOffset, endOffset: input.endOffset, text: DEMO_READER_TEXT.slice(input.startOffset, input.endOffset), note: input.note, createdAt: Date.now() / 1000 }); },
+      async removeBookmark(input) { return response({ bookmarkId: input.bookmarkId, removed: true }); },
+      async controlPlayback(input) {
+        const status = input.command === "pause" ? "paused" : input.command === "stop" ? "idle" : "playing";
+        const commandId = `demo-command-${++readerSequence}`;
+        demoPlaybackState = demoPlayback(demoPosition, status);
+        setTimeout(() => emit(readerPlaybackCallbacks, { schemaVersion: SCHEMA_VERSION, sessionId: input.sessionId, bookId: demoBookId, sequence: readerSequence, commandId, reason: "state", playback: demoPlaybackState, error: null }), 0);
+        return response({ commandId, accepted: true });
+      },
+      async updateSettings(input) { return response({ ...demoReaderSettings(), ...input.patch }); },
+    },
     onBridgeError() {},
     onWindowStateChanged() {},
     onImportProgress(callback) { progressCallbacks.add(callback); },
     onImportFinished(callback) { finishedCallbacks.add(callback); },
+    onReaderOpened(callback) { readerOpenedCallbacks.add(callback); },
+    onReaderSearchFinished(callback) { readerSearchCallbacks.add(callback); },
+    onReaderPlaybackChanged(callback) { readerPlaybackCallbacks.add(callback); },
     dispose() {
       jobs.forEach((job) => clearTimeout(job.timer));
       jobs.clear();
       progressCallbacks.clear();
       finishedCallbacks.clear();
+      readerOpenedCallbacks.clear();
+      readerSearchCallbacks.clear();
+      readerPlaybackCallbacks.clear();
     },
   };
 }
