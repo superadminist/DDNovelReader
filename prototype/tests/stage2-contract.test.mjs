@@ -163,8 +163,8 @@ test("native import controls validate responses and delegate frozen request shap
   assert.equal(cancel.data.cancelRequested, true);
   assert.deepEqual(env.calls, [
     ["selectImportFiles"],
-    ["startFileImport", { selectionId: "selection-1", confirmLargeFiles: true, duplicateMode: "cancel" }],
-    ["startPasteImport", { title: "标题", text: "真实正文。" }],
+    ["startFileImport", JSON.stringify({ selectionId: "selection-1", confirmLargeFiles: true, duplicateMode: "cancel" })],
+    ["startPasteImport", JSON.stringify({ title: "标题", text: "真实正文。" })],
     ["cancelImport", "job-file"],
   ]);
 });

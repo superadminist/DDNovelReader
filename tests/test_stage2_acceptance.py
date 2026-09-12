@@ -112,7 +112,11 @@ class Stage2AcceptanceTests(unittest.TestCase):
         )
         self.env.start()
         self.window = _FakeWindow()
-        self.bridge = DesktopBridge(self.window)
+        self.selected_paths = []
+        self.bridge = DesktopBridge(
+            self.window,
+            file_picker=lambda: list(self.selected_paths),
+        )
 
     def tearDown(self):
         self.env.stop()
@@ -141,6 +145,12 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self._assert_envelope(payload)
         return payload, raw
 
+    def _call_json(self, name: str, payload):
+        return self._call(
+            name,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+
     def _assert_envelope(self, payload):
         self.assertEqual(payload.get("schemaVersion"), SCHEMA_VERSION)
         self.assertIsInstance(payload.get("ok"), bool)
@@ -156,11 +166,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
             self.assertIsInstance(error.get("retryable"), bool)
 
     def _set_file_picker(self, paths):
-        selected_paths = [os.fspath(path) for path in paths]
-        self.bridge = DesktopBridge(
-            self.window,
-            file_picker=lambda: list(selected_paths),
-        )
+        self.selected_paths = [os.fspath(path) for path in paths]
 
     def _select_files(self, paths):
         self._set_file_picker(paths)
@@ -297,7 +303,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertNotIn("path", item)
         self.assertNotIn("sourcePath", item)
 
-        started, _ = self._call("startFileImport", {
+        started, _ = self._call_json("startFileImport", {
             "selectionId": selection["data"]["selectionId"],
             "confirmLargeFiles": True,
             "duplicateMode": "cancel",
@@ -325,7 +331,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
 
     def test_paste_import_uses_real_text_unique_ids_and_no_reader_payload(self):
         first_finished = self._finished_spy()
-        first, _ = self._call("startPasteImport", {
+        first, _ = self._call_json("startPasteImport", {
             "title": "",
             "text": "首行标题\n真实正文内容。",
         })
@@ -337,7 +343,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertNotIn("content", first_event)
 
         second_finished = self._finished_spy()
-        second, _ = self._call("startPasteImport", {
+        second, _ = self._call_json("startPasteImport", {
             "title": "",
             "text": "首行标题\n真实正文内容。",
         })
@@ -349,14 +355,24 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
         library = LibraryQueryService().load_library()
         self.assertEqual(library["total"], 2)
-        self.assertEqual([book["title"] for book in library["books"]], ["首行标题", "首行标题"])
+        titles = [book["title"] for book in library["books"]]
+        self.assertEqual(len(set(titles)), 2)
+        self.assertTrue(all(title.endswith("-首行标题") for title in titles))
+        pasted_sources = sorted((self.data_root / "pasted").glob("*.txt"))
+        self.assertEqual(len(pasted_sources), 2)
+        self.assertEqual(len({path.name for path in pasted_sources}), 2)
+        self.assertTrue(all(
+            path.read_text(encoding="utf-8")
+            == "首行标题\n\n首行标题\n真实正文内容。"
+            for path in pasted_sources
+        ))
         self.assertFalse(json.loads(self.bridge.getInitialState())["data"]["capabilities"]["reader"])
 
     def test_invalid_requests_fail_closed_without_files_or_events(self):
         before = _tree_manifest(self.data_root)
         finished = self._finished_spy()
 
-        invalid_file, invalid_raw = self._call("startFileImport", {
+        invalid_file, invalid_raw = self._call_json("startFileImport", {
             "selectionId": "missing-selection",
             "confirmLargeFiles": False,
             "duplicateMode": "invalid-mode",
@@ -364,7 +380,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertFalse(invalid_file["ok"])
         self.assertNotIn(os.fspath(self.data_root), invalid_raw)
 
-        invalid_paste, invalid_paste_raw = self._call("startPasteImport", {
+        invalid_paste, invalid_paste_raw = self._call_json("startPasteImport", {
             "title": "空正文",
             "text": " \n\t ",
         })
@@ -389,7 +405,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertEqual(selection["data"]["total"], 2)
         self.assertNotIn(os.fspath(valid), selection_raw)
         self.assertNotIn(os.fspath(broken), selection_raw)
-        started, _ = self._call("startFileImport", {
+        started, _ = self._call_json("startFileImport", {
             "selectionId": selection["data"]["selectionId"],
             "confirmLargeFiles": True,
             "duplicateMode": "cancel",
@@ -412,7 +428,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         source = self._write_input("重复书.txt", "第一章\n重复导入正文。".encode("utf-8"))
         first_selection, _ = self._select_files([source])
         first_finished = self._finished_spy()
-        first_start, _ = self._call("startFileImport", {
+        first_start, _ = self._call_json("startFileImport", {
             "selectionId": first_selection["data"]["selectionId"],
             "confirmLargeFiles": True,
             "duplicateMode": "cancel",
@@ -433,7 +449,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertNotIn(os.fspath(source), duplicate_raw)
 
         cancelled_finished = self._finished_spy()
-        cancelled_start, _ = self._call("startFileImport", {
+        cancelled_start, _ = self._call_json("startFileImport", {
             "selectionId": duplicate_selection["data"]["selectionId"],
             "confirmLargeFiles": True,
             "duplicateMode": "cancel",
@@ -465,7 +481,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
             return original_parse(path)
 
         with patch.object(book_loader, "parse_book", side_effect=slow_first):
-            started, _ = self._call("startFileImport", {
+            started, _ = self._call_json("startFileImport", {
                 "selectionId": selection["data"]["selectionId"],
                 "confirmLargeFiles": True,
                 "duplicateMode": "cancel",
