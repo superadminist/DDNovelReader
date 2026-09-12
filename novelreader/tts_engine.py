@@ -582,6 +582,7 @@ class SpeechController:
         self._applied_voice = None
         self._applied_rate = None
         self._rate = 200
+        self._volume = 100
         self._sentence_gap = 0.10
         self._backend = "sapi"
         self._edge_voice = "zh-CN-XiaoxiaoNeural"
@@ -602,9 +603,12 @@ class SpeechController:
         self._hist_check_lock = threading.Lock()
         self._hist_check_queue = []
         self._hist_check_worker = None
+        self._closed = False
 
     # ---------- 事件 ----------
-    def _post(self, evt):
+    def _post(self, evt, generation=None):
+        if generation is not None:
+            evt.setdefault("generation", generation)
         self._queue.put(evt)
 
     def drain(self):
@@ -632,6 +636,14 @@ class SpeechController:
     def is_stopped(self):
         with self._cv:
             return self._state == "idle"
+
+    def generation(self):
+        with self._cv:
+            return self._gen
+
+    def backend(self):
+        with self._cv:
+            return self._backend
 
     # ---------- 对外设置（只存值，工作线程应用） ----------
     def set_voice(self, voice_id):
@@ -1187,63 +1199,113 @@ class SpeechController:
     def start(self, book, chapter_idx, char_offset):
         self._ensure_thread()
         with self._cv:
+            if self._closed:
+                raise RuntimeError("SpeechController 已关闭")
             self._book = book
             self._ci = int(chapter_idx)
             self._off = int(char_offset)
             self._gen += 1
             self._state = "playing"
             self._cv.notify_all()
+            return self._gen
 
     def pause(self):
         with self._cv:
             if self._state == "playing":
                 self._state = "paused"
                 self._cv.notify_all()
+                return True
+            return False
 
     def resume(self):
         with self._cv:
             if self._state == "paused":
                 self._state = "playing"
                 self._cv.notify_all()
+                return True
+            return False
 
     def stop(self):
         with self._cv:
             self._book = None
             self._state = "idle"
+            self._gen += 1
             self._cv.notify_all()
+            return self._gen
+
+    def shutdown(self, timeout=2.0):
+        """有界停止朗读线程；SAPI/COM/MCI 的释放仍由工作线程完成。"""
+        with self._cv:
+            self._closed = True
+            self._book = None
+            self._state = "idle"
+            self._gen += 1
+            self._cv.notify_all()
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout)))
+        return thread is None or not thread.is_alive()
 
     def _ensure_thread(self):
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-        self._ready.wait(timeout=10)
+        with self._cv:
+            if self._closed:
+                raise RuntimeError("SpeechController 已关闭")
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._ready = threading.Event()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+            ready = self._ready
+        ready.wait(timeout=10)
 
     # ---------- 工作线程 ----------
     def _loop(self):
-        self._ensure_engine()
         if self._ready is not None:
             self._ready.set()
         try:
             while True:
                 with self._cv:
-                    while self._book is None:
+                    while self._book is None and not self._closed:
                         self._cv.wait()
+                    if self._closed:
+                        return
                     book = self._book
                     ci = self._ci
                     off = self._off
                     gen = self._gen
                     self._state = "playing"
-                self._run_session(book, ci, off, gen)
-        except Exception as e:  # pragma: no cover
-            self._post({"type": "error", "message": f"朗读出错：{e}"})
+                try:
+                    self._run_session(book, ci, off, gen)
+                except Exception as e:  # pragma: no cover
+                    self._post(
+                        {
+                            "type": "error",
+                            "code": "TTS_FAILED",
+                            "message": f"朗读出错：{e}",
+                            "retryable": True,
+                            "fallback_backend": None,
+                        },
+                        gen,
+                    )
+                    self._fail_session(gen)
+        finally:
+            if self._engine is not None:
+                try:
+                    self._engine.stop()
+                except Exception:
+                    pass
+                try:
+                    self._engine.endLoop()
+                except Exception:
+                    pass
+                self._engine = None
 
     def _ensure_engine(self):
         # 仅 SAPI 后端需要 pyttsx3 引擎；Edge 后端按需初始化 pygame
         if self._engine is None and pyttsx3 is not None:
-            self._engine = pyttsx3.init()
-            self._engine.startLoop(useDriverLoop=False)
+            engine = pyttsx3.init()
+            engine.startLoop(useDriverLoop=False)
+            self._engine = engine
 
     def _sync_props(self):
         with self._cv:
@@ -1264,7 +1326,19 @@ class SpeechController:
 
     def _should_stop(self, gen):
         with self._cv:
-            return self._state == "idle" or self._book is None or self._gen != gen
+            return (
+                self._closed
+                or self._state == "idle"
+                or self._book is None
+                or self._gen != gen
+            )
+
+    def _fail_session(self, gen):
+        with self._cv:
+            if self._gen == gen:
+                self._book = None
+                self._state = "idle"
+                self._cv.notify_all()
 
     # ---------- 朗读会话 ----------
     def _run_session(self, book, ci, off, gen):
@@ -1279,9 +1353,8 @@ class SpeechController:
                     if self._state == "paused":
                         self._cv.wait()
                         continue
-                self._sync_props()
                 if ci >= len(chapters):
-                    self._post({"type": "finished"})
+                    self._post({"type": "finished"}, gen)
                     with self._cv:
                         self._book = None
                         self._state = "idle"
@@ -1296,7 +1369,7 @@ class SpeechController:
                 if clean_off >= len(clean_text):
                     ci += 1
                     off = 0
-                    self._post({"type": "chapter", "chapter_idx": ci})
+                    self._post({"type": "chapter", "chapter_idx": ci}, gen)
                     continue
                 text, next_clean, sent_start = self._next_chunk(clean_text, clean_off)
                 if not text:
@@ -1305,19 +1378,25 @@ class SpeechController:
                 # 用当前句文本的实际起始位置（跳过句前空白），而不是 clean_off
                 actual_clean_off = clean_off + sent_start
                 orig_off = clean_to_orig(cmap, actual_clean_off, len(orig_content))
+                next_orig = clean_to_orig(cmap, next_clean, len(orig_content))
                 self._post(
                     {
                         "type": "sentence_start",
                         "chapter_idx": ci,
                         "char_offset": orig_off,
+                        "char_end": next_orig,
                         "text": text,
-                    }
+                    },
+                    gen,
                 )
-                if self._backend == "edge":
+                with self._cv:
+                    backend = self._backend
+                if backend == "edge":
                     ok = self._speak_edge(text, gen, ci, orig_off, clean_text, next_clean)
                 else:
                     ok = self._speak_sapi(text, gen)
                 if not ok:
+                    self._fail_session(gen)
                     return
                 if self._should_stop(gen):
                     return
@@ -1326,9 +1405,9 @@ class SpeechController:
                         # 本句被打断（暂停），等恢复后重读本句，不推进进度
                         self._cv.wait()
                         continue
-                next_orig = clean_to_orig(cmap, next_clean, len(orig_content))
                 self._post(
-                    {"type": "sentence_done", "chapter_idx": ci, "char_offset": next_orig}
+                    {"type": "sentence_done", "chapter_idx": ci, "char_offset": next_orig},
+                    gen,
                 )
                 # 句子之间停顿（默认 0.10s），增强朗读节奏
                 with self._cv:
@@ -1343,7 +1422,7 @@ class SpeechController:
                 except Exception:
                     pass
                 self._edge_prefetch = None
-            self._post({"type": "stopped"})
+            self._post({"type": "stopped"}, gen)
 
     @staticmethod
     def _next_chunk(content, offset):
@@ -1395,13 +1474,16 @@ class SpeechController:
         """系统语音朗读一句，阻塞到结束或被暂停/停止打断。"""
         if not text:
             return False
-        self._ensure_engine()
         done = threading.Event()
 
         def _on_finished(name=None, completed=None, **kw):
             done.set()
 
         try:
+            self._ensure_engine()
+            if self._engine is None:
+                raise RuntimeError("系统语音不可用")
+            self._sync_props()
             self._engine.connect("finished-utterance", _on_finished)
             self._engine.say(text)
             while not done.is_set():
@@ -1418,7 +1500,16 @@ class SpeechController:
                     break
                 done.wait(0.02)
         except Exception as e:
-            self._post({"type": "error", "message": f"朗读出错：{e}"})
+            self._post(
+                {
+                    "type": "error",
+                    "code": "SAPI_PLAYBACK_FAILED",
+                    "message": f"朗读出错：{e}",
+                    "retryable": True,
+                    "fallback_backend": None,
+                },
+                gen,
+            )
             return False
         finally:
             try:
@@ -1479,7 +1570,14 @@ class SpeechController:
         if not self._edge_fail_posted:
             self._edge_fail_posted = True
             self._post(
-                {"type": "error", "message": "联网语音生成失败，本句已用系统语音朗读"}
+                {
+                    "type": "error",
+                    "code": "EDGE_OFFLINE_FALLBACK",
+                    "message": "联网语音生成失败，本句已用系统语音朗读",
+                    "retryable": True,
+                    "fallback_backend": "sapi",
+                },
+                gen,
             )
         try:
             self._edge_prefetch.close()
@@ -1519,7 +1617,16 @@ class SpeechController:
             _mci_close()
             return True
         except Exception as e:
-            self._post({"type": "error", "message": f"播放出错：{e}"})
+            self._post(
+                {
+                    "type": "error",
+                    "code": "EDGE_PLAYBACK_FAILED",
+                    "message": f"播放出错：{e}",
+                    "retryable": True,
+                    "fallback_backend": None,
+                },
+                gen,
+            )
             return False
         finally:
             try:
