@@ -323,6 +323,38 @@ export interface ReaderPlaybackEvent {
   error: BridgeError | null;
 }
 
+export type FloatingReaderBackground = "light" | "sepia" | "dark";
+
+export interface FloatingReaderSettings {
+  geometry: string;
+  topmost: boolean;
+  opacity: number;
+  fontSize: number;
+  followReaderFont: boolean;
+  background: FloatingReaderBackground;
+  bilingual: boolean;
+}
+
+export interface FloatingReaderContext {
+  chapterIndex: number;
+  chapterTitle: string;
+  previous: ReaderSentence | null;
+  current: ReaderSentence | null;
+  next: ReaderSentence | null;
+}
+
+export interface FloatingReaderState {
+  visible: boolean;
+  settings: FloatingReaderSettings;
+  playback: ReaderPlaybackSnapshot;
+  context: FloatingReaderContext;
+}
+
+export interface FloatingReaderChangedEvent {
+  schemaVersion: 1;
+  state: FloatingReaderState;
+}
+
 export interface ReaderControls {
   openBook(bookId: string): Promise<BridgeResponse<ReaderOpenStartData>>;
   getWindow(input: {
@@ -369,6 +401,20 @@ export interface ReaderControls {
   }): Promise<BridgeResponse<ReaderSettings>>;
 }
 
+export interface FloatingReaderControls {
+  getState(): Promise<BridgeResponse<FloatingReaderState>>;
+  show(): Promise<BridgeResponse<FloatingReaderState>>;
+  close(): Promise<BridgeResponse<{ closed: boolean }>>;
+  updateSettings(input: {
+    patch: Partial<Pick<
+      FloatingReaderSettings,
+      "topmost" | "opacity" | "fontSize" | "followReaderFont" | "background" | "bilingual"
+    >>;
+  }): Promise<BridgeResponse<FloatingReaderState>>;
+  startWindowMove(): void;
+  startWindowResize(edge: "top" | "right" | "bottom" | "left" | "topRight" | "bottomRight" | "bottomLeft" | "topLeft"): void;
+}
+
 export interface WindowControls {
   minimizeWindow(): void;
   toggleMaximizeWindow(): void;
@@ -383,6 +429,7 @@ export interface BridgeConnection {
   controls: WindowControls;
   imports: ImportControls;
   reader: ReaderControls;
+  floating: FloatingReaderControls;
   onBridgeError(callback: (payload: string) => void): void;
   onWindowStateChanged(callback: (payload: string) => void): void;
   onImportProgress(callback: (event: ImportProgressEvent) => void): void;
@@ -390,6 +437,7 @@ export interface BridgeConnection {
   onReaderOpened(callback: (event: ReaderOpenedEvent) => void): void;
   onReaderSearchFinished(callback: (event: ReaderSearchFinishedEvent) => void): void;
   onReaderPlaybackChanged(callback: (event: ReaderPlaybackEvent) => void): void;
+  onFloatingReaderChanged(callback: (event: FloatingReaderChangedEvent) => void): void;
   dispose(): void;
 }
 
