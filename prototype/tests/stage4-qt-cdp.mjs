@@ -567,15 +567,23 @@ async function primaryScenario() {
     const rect = node.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
-  probe("drag", [
-    "--role", "floating",
-    "--from-x", String(Math.round(resizePoint.x)),
-    "--from-y", String(Math.round(resizePoint.y)),
-    "--dx", "90",
-    "--dy", "60",
-  ]);
-  await sleep(400);
-  const afterResize = roleWindow(probe(), "floating").rect;
+  let afterResize = beforeResize;
+  // Native system-resize begins only when the pointer-down lands inside the
+  // small WebEngine handle.  Try a few points progressively farther inside
+  // the handle so a fractional device-pixel rounding does not make this gate
+  // flaky; every attempt still has to resize the real top-level window.
+  for (const inset of [0, -3, -6]) {
+    probe("drag", [
+      "--role", "floating",
+      "--from-x", String(Math.round(resizePoint.x + inset)),
+      "--from-y", String(Math.round(resizePoint.y + inset)),
+      "--dx", "90",
+      "--dy", "60",
+    ]);
+    await sleep(400);
+    afterResize = roleWindow(probe(), "floating").rect;
+    if (beforeResize.width !== afterResize.width || beforeResize.height !== afterResize.height) break;
+  }
   if (beforeResize.width === afterResize.width && beforeResize.height === afterResize.height) throw new Error("System startWindowResize path did not resize the native floating window");
 
   const screen = probe().monitors.find((item) => item.primary) || probe().monitors[0];
