@@ -155,12 +155,16 @@ class Stage2AcceptanceTests(unittest.TestCase):
             self.assertIsInstance(error.get("message"), str)
             self.assertIsInstance(error.get("retryable"), bool)
 
+    def _set_file_picker(self, paths):
+        selected_paths = [os.fspath(path) for path in paths]
+        self.bridge = DesktopBridge(
+            self.window,
+            file_picker=lambda: list(selected_paths),
+        )
+
     def _select_files(self, paths):
-        with patch(
-            "PySide6.QtWidgets.QFileDialog.getOpenFileNames",
-            return_value=([os.fspath(path) for path in paths], ""),
-        ):
-            return self._call("selectFiles")
+        self._set_file_picker(paths)
+        return self._call("selectImportFiles")
 
     def _finished_spy(self):
         return QSignalSpy(self._require_signal("importFinished"))
@@ -261,9 +265,9 @@ class Stage2AcceptanceTests(unittest.TestCase):
 
     def test_file_selection_cancel_is_a_zero_write_success(self):
         before = _tree_manifest(self.data_root)
+        self._set_file_picker([])
         finished = self._finished_spy()
-        with patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames", return_value=([], "")):
-            payload, _ = self._call("selectFiles")
+        payload, _ = self._call("selectImportFiles")
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["cancelled"], True)
@@ -276,10 +280,10 @@ class Stage2AcceptanceTests(unittest.TestCase):
     def test_txt_file_import_is_real_redacted_and_produces_open_intent(self):
         source = self._write_input("阶段2测试.txt", "第一章\n真实正文第一句。第二句。".encode("utf-8"))
         source_before = _fingerprint(source)
+        selection, selection_raw = self._select_files([source])
         finished = self._finished_spy()
         progress = self._progress_spy()
 
-        selection, selection_raw = self._select_files([source])
         self.assertTrue(selection["ok"])
         self.assertFalse(selection["data"]["cancelled"])
         self.assertEqual(selection["data"]["total"], 1)
@@ -378,9 +382,9 @@ class Stage2AcceptanceTests(unittest.TestCase):
         broken = self._write_input("损坏.epub", b"not-an-epub")
         valid_before = _fingerprint(valid)
         broken_before = _fingerprint(broken)
+        selection, selection_raw = self._select_files([valid, broken])
         finished = self._finished_spy()
 
-        selection, selection_raw = self._select_files([valid, broken])
         self.assertTrue(selection["ok"])
         self.assertEqual(selection["data"]["total"], 2)
         self.assertNotIn(os.fspath(valid), selection_raw)
@@ -406,8 +410,8 @@ class Stage2AcceptanceTests(unittest.TestCase):
 
     def test_duplicate_file_is_reported_and_cancel_mode_is_zero_write(self):
         source = self._write_input("重复书.txt", "第一章\n重复导入正文。".encode("utf-8"))
-        first_finished = self._finished_spy()
         first_selection, _ = self._select_files([source])
+        first_finished = self._finished_spy()
         first_start, _ = self._call("startFileImport", {
             "selectionId": first_selection["data"]["selectionId"],
             "confirmLargeFiles": True,

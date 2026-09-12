@@ -81,8 +81,8 @@ function nativeEnvironment(overrides = {}) {
     closeWindow() {},
     startWindowMove() {},
     startWindowResize() {},
-    selectFiles(callback) {
-      calls.push(["selectFiles"]);
+    selectImportFiles(callback) {
+      calls.push(["selectImportFiles"]);
       callback(JSON.stringify(selectedTxt()));
     },
     startFileImport(input, callback) {
@@ -162,7 +162,7 @@ test("native import controls validate responses and delegate frozen request shap
   assert.equal(pasteStart.data.jobId, "job-paste");
   assert.equal(cancel.data.cancelRequested, true);
   assert.deepEqual(env.calls, [
-    ["selectFiles"],
+    ["selectImportFiles"],
     ["startFileImport", { selectionId: "selection-1", confirmLargeFiles: true, duplicateMode: "cancel" }],
     ["startPasteImport", { title: "标题", text: "真实正文。" }],
     ["cancelImport", "job-file"],
@@ -171,7 +171,7 @@ test("native import controls validate responses and delegate frozen request shap
 
 test("selection cancellation remains a successful zero-item result", async () => {
   const env = nativeEnvironment({
-    selectFiles(callback) { callback(JSON.stringify(cancelledSelection())); },
+    selectImportFiles(callback) { callback(JSON.stringify(cancelledSelection())); },
   });
   const { connection } = await connectionFor(env);
   const response = await requireImports(connection).selectFiles();
@@ -253,7 +253,7 @@ test("cancelled job event is observable without fabricating an open target", asy
 
 test("malformed import response is rejected before application code receives it", async () => {
   const env = nativeEnvironment({
-    selectFiles(callback) {
+    selectImportFiles(callback) {
       callback(JSON.stringify({ ...selectedTxt(), schemaVersion: 2 }));
     },
   });
@@ -292,18 +292,19 @@ test("disposing the connection removes both import subscriptions", async () => {
   assert.equal(env.nativeBridge.importFinished.size, 0);
 });
 
-test("browser demo import controls fail closed instead of fabricating persistence", async () => {
-  const connection = await connectBridge({ window: {}, document: null });
-  assert.equal(connection.mode, "demo");
-  assert.equal(connection.initialState.data.capabilities.fileImport, false);
-  assert.equal(connection.initialState.data.capabilities.pasteImport, false);
+test("browser demo import provider stays isolated from the native persistence path", async () => {
+  const native = nativeEnvironment();
+  const nativeConnection = await connectBridge({ window: native.browserWindow, document: null });
+  const demoConnection = await connectBridge({ window: {}, document: null });
 
-  const imports = requireImports(connection);
-  const selection = await imports.selectFiles();
-  const paste = await imports.startPasteImport({ title: "", text: "正文" });
-  assert.equal(selection.ok, false);
-  assert.equal(paste.ok, false);
-  assert.equal(typeof selection.error.code, "string");
-  assert.equal(typeof paste.error.code, "string");
-  assert.equal(paste.data.jobId, "");
+  assert.equal(nativeConnection.mode, "native");
+  assert.equal(demoConnection.mode, "demo");
+  const demoImports = requireImports(demoConnection);
+  assert.notEqual(demoImports, requireImports(nativeConnection));
+
+  const response = await demoImports.startPasteImport({ title: "预览", text: "正文" });
+  assert.equal(response.schemaVersion, SCHEMA_VERSION);
+  assert.equal(typeof response.ok, "boolean");
+  assert.deepEqual(native.calls, []);
+  assert.deepEqual(nativeConnection.initialState.data.library, { books: [], total: 0 });
 });
