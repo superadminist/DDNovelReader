@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QFile, QIODevice, Qt, QUrl
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
@@ -19,8 +19,9 @@ from PySide6.QtWebEngineCore import (
     QWebEngineUrlRequestInterceptor,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QMainWindow, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
+from .book_loader import SUPPORTED_EXTS
 from .library_service import LibraryQueryService
 from .qt_bridge import DesktopBridge
 
@@ -78,7 +79,7 @@ class DesktopWindow(QMainWindow):
         )
 
         self._inject_qwebchannel_script()
-        self.bridge = DesktopBridge(self, library)
+        self.bridge = DesktopBridge(self, library, file_picker=self._select_import_files)
         self._channel = QWebChannel(self._page)
         self._channel.registerObject("ddBridge", self.bridge)
         self._page.setWebChannel(self._channel)
@@ -119,6 +120,21 @@ class DesktopWindow(QMainWindow):
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
+
+    def _select_import_files(self) -> list[str]:
+        patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_EXTS))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择要加入书架的小说（可多选）",
+            "",
+            f"支持的小说格式 ({patterns});;所有文件 (*)",
+        )
+        return paths
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if hasattr(self, "bridge"):
+            self.bridge.shutdownImports()
+        super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
