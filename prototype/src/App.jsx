@@ -451,6 +451,11 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
     event.preventDefault();
     if (query.trim()) onSearch(query.trim());
   };
+  const navigate = (target) => {
+    window.clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = null;
+    onNavigate(target);
+  };
   const handleScroll = (event) => {
     if (playback.status === "playing") return;
     const container = event.currentTarget;
@@ -469,9 +474,9 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
       <div className="reader-layout">
         <aside className="toc-panel">
           <div className="toc-title"><span>{panelMode === "toc" ? "目录" : panelMode === "search" ? "书内搜索" : "书签"}</span><small>{panelMode === "toc" ? `${data.book.chapters.length} 章` : ""}</small></div>
-          {panelMode === "toc" ? <div className="toc-list">{data.book.chapters.map((chapter) => <button key={chapter.index} className={data.position.chapterIndex === chapter.index ? "selected" : ""} onClick={() => onNavigate({ kind: "position", chapterIndex: chapter.index, charOffset: 0 })}><span>{String(chapter.index + 1).padStart(2, "0")}</span>{chapter.title}</button>)}</div> : null}
-          {panelMode === "search" ? <div className="reader-side-content"><form onSubmit={submitSearch}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词后回车" /><button className="primary-button" type="submit">搜索</button></form>{state.search.status === "loading" ? <p>正在搜索真实正文…</p> : null}{state.search.error ? <p className="reader-side-error">{state.search.error}</p> : null}{state.search.page?.results.map((result) => <button key={result.id} className="reader-side-result" onClick={() => onNavigate({ kind: "position", chapterIndex: result.chapterIndex, charOffset: result.startOffset })}><strong>{result.chapterTitle}</strong><span>{result.excerpt}</span></button>)}{state.search.status === "ready" && state.search.page?.total === 0 ? <p>没有匹配内容</p> : null}</div> : null}
-          {panelMode === "bookmarks" ? <div className="reader-side-content">{playback.sentence ? <button className="primary-button bookmark-current" onClick={() => onAddBookmark(playback.sentence)}>收藏当前句</button> : <p>开始朗读后可收藏当前句。</p>}{state.bookmarks.status === "loading" ? <p>正在读取书签…</p> : null}{state.bookmarks.error ? <p className="reader-side-error">{state.bookmarks.error}</p> : null}{state.bookmarks.page?.items.map((bookmark) => <div key={bookmark.id} className="reader-bookmark"><button onClick={() => onNavigate({ kind: "position", chapterIndex: bookmark.chapterIndex, charOffset: bookmark.startOffset })}><strong>{bookmark.chapterTitle}</strong><span>{bookmark.text}</span></button><button aria-label={`删除书签 ${bookmark.text}`} onClick={() => onRemoveBookmark(bookmark.id)}><X /></button></div>)}{state.bookmarks.status === "ready" && state.bookmarks.page?.total === 0 ? <p>暂无书签</p> : null}</div> : null}
+          {panelMode === "toc" ? <div className="toc-list">{data.book.chapters.map((chapter) => <button key={chapter.index} className={data.position.chapterIndex === chapter.index ? "selected" : ""} onClick={() => navigate({ kind: "position", chapterIndex: chapter.index, charOffset: 0 })}><span>{String(chapter.index + 1).padStart(2, "0")}</span>{chapter.title}</button>)}</div> : null}
+          {panelMode === "search" ? <div className="reader-side-content"><form onSubmit={submitSearch}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词后回车" /><button className="primary-button" type="submit">搜索</button></form>{state.search.status === "loading" ? <p>正在搜索真实正文…</p> : null}{state.search.error ? <p className="reader-side-error">{state.search.error}</p> : null}{state.search.page?.results.map((result) => <button key={result.id} className="reader-side-result" onClick={() => navigate({ kind: "position", chapterIndex: result.chapterIndex, charOffset: result.startOffset })}><strong>{result.chapterTitle}</strong><span>{result.excerpt}</span></button>)}{state.search.status === "ready" && state.search.page?.total === 0 ? <p>没有匹配内容</p> : null}</div> : null}
+          {panelMode === "bookmarks" ? <div className="reader-side-content">{playback.sentence ? <button className="primary-button bookmark-current" onClick={() => onAddBookmark(playback.sentence)}>收藏当前句</button> : <p>开始朗读后可收藏当前句。</p>}{state.bookmarks.status === "loading" ? <p>正在读取书签…</p> : null}{state.bookmarks.error ? <p className="reader-side-error">{state.bookmarks.error}</p> : null}{state.bookmarks.page?.items.map((bookmark) => <div key={bookmark.id} className="reader-bookmark"><button onClick={() => navigate({ kind: "position", chapterIndex: bookmark.chapterIndex, charOffset: bookmark.startOffset })}><strong>{bookmark.chapterTitle}</strong><span>{bookmark.text}</span></button><button aria-label={`删除书签 ${bookmark.text}`} onClick={() => onRemoveBookmark(bookmark.id)}><X /></button></div>)}{state.bookmarks.status === "ready" && state.bookmarks.page?.total === 0 ? <p>暂无书签</p> : null}</div> : null}
           <div className="toc-footer"><UploadSimple /> 已同步阅读进度</div>
         </aside>
         <article className={`reading-sheet paragraph-mode-${data.settings.paragraphMode}`} style={{ "--reading-size": `${data.settings.fontSize}px`, "--reading-line-height": data.settings.lineSpacing, fontFamily: data.settings.fontFamily }} onScroll={handleScroll}>
@@ -487,7 +492,7 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
           <div className="page-count">{data.position.progressPercent.toFixed(1)}%</div>
         </article>
       </div>
-      <NativePlayer playback={playback} chapterTitle={chapterTitle} pendingCommand={state.pendingCommand} onCommand={onCommand} onNavigate={onNavigate} onSettings={onSettings} settings={data.settings} />
+      <NativePlayer playback={playback} chapterTitle={chapterTitle} pendingCommand={state.pendingCommand} onCommand={onCommand} onNavigate={navigate} onSettings={onSettings} settings={data.settings} />
     </section>
   );
 }

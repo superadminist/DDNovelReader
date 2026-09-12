@@ -63,7 +63,7 @@ class _Playback:
         self.session_id = session_id
         return self.snapshot()
 
-    def set_position(self, chapter_index, char_offset):
+    def set_position(self, chapter_index, char_offset, restart_playing=False):
         return {"chapterIndex": chapter_index, "charOffset": char_offset}
 
     def control(self, command, command_id=None, session_id=None):

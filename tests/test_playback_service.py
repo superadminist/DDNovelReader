@@ -142,6 +142,27 @@ class PlaybackServiceTests(unittest.TestCase):
         self.assertNotIn("idle", [event["playback"]["status"] for event in events])
         self.assertEqual(events[-1]["playback"]["sentence"]["text"], "第二句！")
 
+    def test_explicit_navigation_restarts_playing_with_a_new_generation(self):
+        self.service.control("play", "play-1")
+        old_generation = self.speech.generation()
+        self.service.drain_events()
+
+        position = self.service.set_position(1, 2, restart_playing=True)
+
+        self.assertGreater(self.speech.generation(), old_generation)
+        self.assertEqual(self.speech.starts[-1], (1, 2))
+        self.assertEqual(position["chapterIndex"], 1)
+        self.assertEqual(self.service.drain_events()[-1]["playback"]["status"], "playing")
+
+    def test_passive_scroll_does_not_move_active_playback(self):
+        self.service.control("play", "play-1")
+        self.service.drain_events()
+
+        position = self.service.set_position(1, 2)
+
+        self.assertEqual(position["chapterIndex"], 0)
+        self.assertEqual(self.speech.starts, [(0, 0)])
+
     def test_edge_fallback_keeps_playing(self):
         self.speech._backend = "edge"
         self.service.control("play", "play-edge")

@@ -194,6 +194,21 @@ test("native reader controls use the frozen slots and serialize complex inputs",
   ]);
 });
 
+test("native reader business errors preserve their backend code before success-data validation", async () => {
+  const env = nativeEnvironment(createDemoInitialState());
+  env.nativeBridge.openReaderBook = (_bookId, callback) => callback(JSON.stringify({
+    schemaVersion: 1,
+    ok: false,
+    data: { requestId: "", bookId: "missing", state: "loading" },
+    error: { code: "BOOK_NOT_FOUND", message: "内容库中不存在该书籍。", retryable: false },
+  }));
+  const connection = await connectBridge({ window: env.browserWindow, document: null });
+  await assert.rejects(
+    connection.reader.openBook("missing"),
+    (error) => error instanceof BridgeProtocolError && error.code === "BOOK_NOT_FOUND",
+  );
+});
+
 test("native reader events are parsed, bounded and disposed", async () => {
   const env = nativeEnvironment(createDemoInitialState());
   const connection = await connectBridge({ window: env.browserWindow, document: null });

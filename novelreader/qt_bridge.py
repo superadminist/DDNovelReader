@@ -7,6 +7,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -124,6 +125,7 @@ class DesktopBridge(QObject):
         self._reader_timer.setInterval(25)
         self._reader_timer.timeout.connect(self._drain_reader_events)
         self._reader_timer.start()
+        self._shutdown = False
 
     def _state_data(self, library: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
@@ -369,7 +371,9 @@ class DesktopBridge(QObject):
         try:
             data = self._reader.navigate(request.get("sessionId"), request.get("target"))
             position = data["position"]
-            self._playback.set_position(position["chapterIndex"], position["charOffset"])
+            self._playback.set_position(
+                position["chapterIndex"], position["charOffset"], restart_playing=True
+            )
             data["playback"] = self._playback.snapshot()
             return self._ok_response(data)
         except Exception as exc:
@@ -387,6 +391,8 @@ class DesktopBridge(QObject):
                 request.get("chapterIndex"),
                 request.get("charOffset"),
             )
+            position = data["position"]
+            self._playback.set_position(position["chapterIndex"], position["charOffset"])
             return self._ok_response(data)
         except Exception as exc:
             return self._reader_error_response(empty, exc)
@@ -526,7 +532,6 @@ class DesktopBridge(QObject):
 
     @Slot()
     def closeWindow(self) -> None:
-        self.shutdown()
         self._window.close()
 
     @Slot()
@@ -557,14 +562,18 @@ class DesktopBridge(QObject):
         self._selections.clear()
 
     def shutdown(self) -> None:
+        if self._shutdown:
+            return
+        self._shutdown = True
         self.shutdownImports()
         if self._search_cancel is not None:
             self._search_cancel.set()
         self._reader_timer.stop()
         self._import_timer.stop()
+        deadline = time.monotonic() + 2.0
         for thread in (self._import_thread, self._reader_thread, self._search_thread):
             if thread is not None and thread.is_alive():
-                thread.join(timeout=2.0)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._playback.shutdown(2.0)
 
     def _start_import_job(
@@ -653,6 +662,16 @@ class DesktopBridge(QObject):
         except RuntimeError:
             return
         for event in events:
+            if event.get("reason") in {"sentenceDone", "finished"}:
+                position = event.get("playback", {}).get("position", {})
+                try:
+                    self._reader.update_position(
+                        event.get("sessionId"),
+                        position.get("chapterIndex"),
+                        position.get("charOffset"),
+                    )
+                except ReaderServiceError as exc:
+                    self._emit_error(exc.code, exc.user_message)
             self.readerPlaybackChanged.emit(_json(event))
 
     @staticmethod

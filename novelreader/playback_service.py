@@ -80,14 +80,32 @@ class PlaybackService:
             self._speech.set_book_id(self._book_id)
             return self.snapshot()
 
-    def set_position(self, chapter_index, char_offset):
-        """同步非播放导航产生的位置；活跃朗读由句子命令统一重启。"""
+    def set_position(self, chapter_index, char_offset, restart_playing=False):
+        """同步阅读位置；显式导航可从新位置继续正在进行的朗读。"""
         with self._lock:
             self._ensure_bound()
+            if self._status == "playing" and not restart_playing:
+                return self._position()
             self._chapter_index, self._char_offset = self._clamp_position(
                 chapter_index, char_offset
             )
             self._sentence = None
+            if self._status == "playing":
+                self._generation = self._speech.start(
+                    self._book, self._chapter_index, self._char_offset
+                )
+                self._active_backend = self._speech.backend()
+                self._terminal_generation = None
+                self._queue_event("state")
+            elif self._status == "paused":
+                self._generation = self._speech.stop()
+                self._active_backend = None
+                self._terminal_generation = None
+                self._queue_event("state")
+            elif self._status in {"finished", "error"}:
+                self._status = "idle"
+                self._active_backend = None
+                self._fallback_active = False
             return self._position()
 
     def control(self, command, command_id=None, session_id=None):

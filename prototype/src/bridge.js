@@ -101,18 +101,20 @@ function parseBridgeResponse(raw, validateData) {
   if (!payload || payload.schemaVersion !== SCHEMA_VERSION) {
     throw new BridgeProtocolError("桌面程序与界面版本不兼容，请更新后重试。", "SCHEMA_MISMATCH");
   }
-  if (
-    typeof payload.ok !== "boolean"
-    || !validBridgeError(payload.error)
-    || !validateData(payload.data)
-  ) {
+  if (typeof payload.ok !== "boolean" || !validBridgeError(payload.error)) {
     throw new BridgeProtocolError("桌面通信返回的数据结构不完整。", "BRIDGE_INVALID_PAYLOAD");
   }
   if (!payload.ok) {
+    if (!payload.error) {
+      throw new BridgeProtocolError("桌面通信返回的数据结构不完整。", "BRIDGE_INVALID_PAYLOAD");
+    }
     throw new BridgeProtocolError(
       payload.error?.message || "桌面操作失败。",
       payload.error?.code || "BRIDGE_REQUEST_FAILED",
     );
+  }
+  if (payload.error !== null || !validateData(payload.data)) {
+    throw new BridgeProtocolError("桌面通信返回的数据结构不完整。", "BRIDGE_INVALID_PAYLOAD");
   }
   return payload;
 }
