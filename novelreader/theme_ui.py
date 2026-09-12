@@ -47,6 +47,11 @@ class ThemeMixin:
         self.size_label.configure(text=str(size))
         self._apply_font()
         self.storage.set_setting("font_size", size)
+        try:
+            if self.settings.get("floating_reader_follow_font", True):
+                self._update_floating_reader()
+        except Exception:
+            pass
     def _change_line_spacing(self, delta):
         ls = round(float(self.settings.get("line_spacing", 1.5)) + delta, 1)
         ls = max(1.0, min(3.0, ls))

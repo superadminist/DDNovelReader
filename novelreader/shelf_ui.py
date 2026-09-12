@@ -104,6 +104,10 @@ class ShelfMixin:
                                     values=("", "（书架为空，点击『添加书籍』导入）", "", ""))
         # 后台异步计算缺失的缓存大小
         self._refresh_shelf_sizes_async()
+        try:
+            self._refresh_library_home()
+        except Exception:
+            pass
     def _update_bookshelf_progress(self, bid, percent):
         """只更新当前书的进度/时间；按进度排序时同步调整位置。"""
         try:
@@ -129,6 +133,10 @@ class ShelfMixin:
             ordered = sorted(children, key=sort_key, reverse=reverse)
             for index, iid in enumerate(ordered):
                 self.shelf_tree.move(iid, "", index)
+        except Exception:
+            pass
+        try:
+            self._update_library_progress(bid, percent)
         except Exception:
             pass
     def _shelf_sort(self, col):

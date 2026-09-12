@@ -11,36 +11,51 @@ import sys
 
 def _setup_tcltk():
     """为 tkinter 定位 Tcl/Tk 脚本库。本机 Python 为精简发行版时必需。"""
-    if os.environ.get("TCL_LIBRARY") and os.path.exists(os.environ["TCL_LIBRARY"]):
+    current_tcl = os.environ.get("TCL_LIBRARY", "")
+    current_tk = os.environ.get("TK_LIBRARY", "")
+    if (os.path.isfile(os.path.join(current_tcl, "init.tcl")) and
+            os.path.isfile(os.path.join(current_tk, "tk.tcl"))):
         return
-    candidates = []
+
+    # 无效或不完整的外部配置会阻止 Tcl 自身继续搜索，先清理后统一探测。
+    os.environ.pop("TCL_LIBRARY", None)
+    os.environ.pop("TK_LIBRARY", None)
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    candidates = [
+        # venv 对应的基础 Python 安装（标准 Windows Python 的 Tcl/Tk 所在位置）
+        (os.path.join(base_prefix, "tcl", "tcl8.6"),
+         os.path.join(base_prefix, "tcl", "tk8.6")),
+        (os.path.join(base_prefix, "Lib", "tcl8.6"),
+         os.path.join(base_prefix, "Lib", "tk8.6")),
+    ]
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-        candidates = [
-            os.path.join(base, "_tcl_data"),   # PyInstaller 运行时钩子收集的目录
-            os.path.join(base, "tcl", "tcl8.6"),
-            os.path.join(base, "tcl8.6"),
-            os.path.join(base, "lib", "tcl8.6"),
+        # 打包程序必须优先使用包内资源，避免依赖目标机器的 Python。
+        candidates[0:0] = [
+            (os.path.join(base, "tcl8.6"), os.path.join(base, "tk8.6")),
+            (os.path.join(base, "tcl", "tcl8.6"), os.path.join(base, "tcl", "tk8.6")),
+            (os.path.join(base, "lib", "tcl8.6"), os.path.join(base, "lib", "tk8.6")),
+            (os.path.join(base, "_tcl_data"), os.path.join(base, "_tk_data")),
         ]
     else:
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        candidates = [
-            os.path.join(here, ".venv", "Lib", "tcl8.6"),
-            os.path.join(here, "Lib", "tcl8.6"),
-            os.path.join(here, "tcl", "tcl8.6"),
-        ]
-        py = os.path.dirname(sys.executable)
-        candidates.append(os.path.join(py, "tcl", "tcl8.6"))
-        candidates.append(os.path.join(py, "..", "tcl", "tcl8.6"))
-    for c in candidates:
-        if os.path.exists(os.path.join(c, "init.tcl")):
-            os.environ["TCL_LIBRARY"] = c
-            parent = os.path.dirname(c)
-            for tkname in ("tk8.6", "tk8.6", "tk8.6"):
-                tkdir = os.path.join(parent, tkname)
-                if os.path.exists(os.path.join(tkdir, "tk.tcl")):
-                    os.environ["TK_LIBRARY"] = tkdir
-                    break
+        candidates.extend([
+            (os.path.join(sys.prefix, "tcl", "tcl8.6"),
+             os.path.join(sys.prefix, "tcl", "tk8.6")),
+            (os.path.join(here, ".venv", "Lib", "tcl8.6"),
+             os.path.join(here, ".venv", "Lib", "tk8.6")),
+            (os.path.join(here, "Lib", "tcl8.6"),
+             os.path.join(here, "Lib", "tk8.6")),
+            (os.path.join(here, "tcl", "tcl8.6"),
+             os.path.join(here, "tcl", "tk8.6")),
+        ])
+
+    for tcl_dir, tk_dir in candidates:
+        if (os.path.isfile(os.path.join(tcl_dir, "init.tcl")) and
+                os.path.isfile(os.path.join(tk_dir, "tk.tcl"))):
+            os.environ["TCL_LIBRARY"] = os.path.normpath(tcl_dir)
+            os.environ["TK_LIBRARY"] = os.path.normpath(tk_dir)
             return
 
 

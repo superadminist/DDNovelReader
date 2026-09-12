@@ -71,6 +71,10 @@ class TtsMixin:
         else:
             self.tts_toggle_btn.configure(text="▶ 开始朗读", state="normal")
             self.tts_stop_btn.configure(state="disabled")
+        try:
+            self._sync_modern_tts_state(state)
+        except Exception:
+            pass
     def _poll_tts(self):
         try:
             for evt in self.tts.drain():
@@ -149,6 +153,10 @@ class TtsMixin:
         self.rate_label.configure(text=str(rate))
         self.tts.set_rate(rate)
         self.storage.set_setting("tts_rate", rate)
+        try:
+            self._sync_modern_tts_state("playing" if self.tts.is_playing() else ("paused" if self.tts.is_paused() else "stopped"))
+        except Exception:
+            pass
     def _on_voice_change(self, event):
         idx = self.voice_cb.current()
         if idx < 0 or not getattr(self, "_voice_ids", None):

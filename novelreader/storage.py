@@ -113,6 +113,14 @@ DEFAULT_SETTINGS = {
     "first_line_indent": True, # 段落首行缩进二个字
     "tts_sentence_gap": 0.10,  # 句子停顿间隔（秒）
     "tts_cache_dir": "",       # 自定义整本语音缓存根目录（空=默认 %APPDATA%\\DDNovelReader\\tts_cache）
+    "floating_reader_geometry": "",
+    "floating_reader_topmost": True,
+    "floating_reader_opacity": 0.92,
+    "floating_reader_font_size": 22,
+    "floating_reader_follow_font": True,
+    "floating_reader_background": "light",
+    "floating_reader_bilingual": False,
+    "library_view_mode": "grid",
 }
 
 

@@ -10,6 +10,10 @@ __pycache__/
 venv/
 env/
 
+# 前端本地依赖缓存
+/prototype/node_modules/
+/.pnpm-store/
+
 # PyInstaller 构建产物
 build/
 dist/

@@ -109,6 +109,11 @@ class ReaderMixin:
             self._save_now()
         self.tts.stop()
         self.current_bid = bid
+        try:
+            self._modern_sentence_cache = {}
+            self._floating_sentence = ("", "", "")
+        except Exception:
+            pass
         self.tts.set_book_id(bid)
         self.book = self._load_book(meta.get("path", ""))
         if self.book is None:
@@ -128,8 +133,19 @@ class ReaderMixin:
         self.root.title(f"{self.book.title} - 多多朗读 v{__version__}")
         self.title_label.configure(text=self.book.title)
         self._populate_chapters()
+        try:
+            # 先让阅读页参与布局，再执行 Text.see/yview；隐藏 Text 的首次布局
+            # 在长文档上会退化到数秒甚至十余秒。
+            self._show_reader_page()
+            self.root.update_idletasks()
+        except Exception:
+            pass
         self._render_chapter()
         self._refresh_bookshelf()
+        try:
+            self._sync_modern_playback()
+        except Exception:
+            pass
     def _populate_chapters(self):
         titles = [c.title for c in self.book.chapters]
         self._chapter_titles_cache = titles
@@ -137,7 +153,7 @@ class ReaderMixin:
         self.chapter_cb.set(titles[self.chapter_idx])
         self.chapter_list.delete(0, "end")
         for i, t in enumerate(titles):
-            self.chapter_list.insert("end", t)
+            self.chapter_list.insert("end", f"{i + 1:02d}   {t}")
         self.chapter_list.see(self.chapter_idx)
         self.chapter_list.selection_clear(0, "end")
         self.chapter_list.selection_set(self.chapter_idx)
@@ -181,6 +197,10 @@ class ReaderMixin:
         self._repin_reading()
         # 渲染本书书签高亮（划线标注）
         self._apply_bookmark_tags()
+        try:
+            self._sync_modern_playback()
+        except Exception:
+            pass
     def _render_empty(self):
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
@@ -205,6 +225,10 @@ class ReaderMixin:
         self.percent_label.configure(text=f"{pct:.1f}%")
         self.pos_label.configure(text=f"第 {self.chapter_idx + 1} 章 / 共 {len(self.book.chapters)} 章")
         self.total_label.configure(text=f"总字数 {self.book.total_chars:,}")
+        try:
+            self._sync_modern_playback()
+        except Exception:
+            pass
     def _on_seek_press(self, event=None):
         self._seeking = True
         self._pending_seek_pct = None
@@ -450,7 +474,7 @@ class ReaderMixin:
             self._inner_paned.remove(self.chapter_panel)
             self._chapter_panel_visible = False
         else:
-            self._inner_paned.add(self.chapter_panel, weight=0)
+            self._inner_paned.insert(0, self.chapter_panel, weight=0)
             self._chapter_panel_visible = True
     def _handle_tts_event(self, evt):
         t = evt["type"]
@@ -482,6 +506,10 @@ class ReaderMixin:
             # 非阻塞提示。注意：Edge 联网失败会回退本地语音并继续朗读，
             # 此时不能把按钮重置为“开始朗读”，真正的结束由 “stopped” 事件统一处理。
             self._flash_status(evt.get("message", "朗读出错"))
+        try:
+            self._sync_modern_playback(evt)
+        except Exception:
+            pass
     def _transformed_pos(self, content, off):
         """把原始正文的字符偏移映射到渲染文本（压缩空行后）中的 (行, 列)。
 
@@ -544,36 +572,12 @@ class ReaderMixin:
     def _pin_highlight_top(self, start):
         """把高亮所在显示行钉到窗口第一行（兼容所有空行模式）。
 
-        模式1/2（每段独占一行）直接用 Tk 原生 yview(index) 整行滚动，天然精确；
-        模式3（清理所有行）全文只有一行，按行号滚动永远停在文首、高亮无法跟随，
-        改用「先 see 保证可见 → dlineinfo 测该行像素偏移 → yview fraction 换算
-        滚动量」，把高亮所在显示行钉到窗口第一行。
+        Tk 的 yview(index) 会按索引所在的显示行定位，也能处理模式3中由自动
+        折行产生的显示行。直接交给 Tk 计算可避免标题留白、内边距和 DPI 缩放
+        参与人工像素换算后产生累计误差。
         """
         try:
-            mode = int(self.settings.get("paragraph_mode", 1))
-            if mode != 3:
-                top = self.text.index(f"{start} linestart")
-                self.text.yview(top)
-                return
-            self.text.see(start)
-            dline = self.text.dlineinfo(start)
-            if not dline:
-                return
-            pady = 0
-            try:
-                pady = int(float(self.text.cget("pady")))
-            except Exception:
-                pady = 0
-            delta = dline[1] - pady  # 该显示行距视口顶部还需上滚的像素
-            if delta <= 0:
-                return
-            first, last = self.text.yview()
-            span = last - first
-            viewport_px = self.text.winfo_height()
-            if span <= 0 or viewport_px <= 0:
-                return
-            total_px = viewport_px / span  # 全文像素总高度
-            self.text.yview_moveto(max(0.0, min(1.0, first + delta / total_px)))
+            self.text.yview(start)
         except Exception:
             try:
                 self.text.see(start)

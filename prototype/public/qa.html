@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>悬浮卡片对照检查</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; color: #232731; background: #dfe6f1; }
+      h1 { margin: 0 0 8px; font-size: 13px; }
+      .compare { height: calc(100vh - 40px); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      figure { margin: 0; min-width: 0; overflow: hidden; border: 1px solid rgba(255,255,255,.8); border-radius: 10px; background: white; box-shadow: 0 8px 24px rgba(50,58,78,.14); }
+      figcaption { height: 30px; padding: 7px 9px; color: #596173; background: #f7f8fb; font-size: 10px; font-weight: 700; }
+      img { width: 100%; height: calc(100% - 30px); display: block; object-fit: contain; background: #eef1f6; }
+      .prototype-frame { height: calc(100% - 30px); overflow: hidden; background: #eef1f6; }
+      iframe { width: 650px; height: 610px; display: block; border: 0; transform: scale(.45); transform-origin: 0 0; }
+    </style>
+  </head>
+  <body>
+    <h1>悬浮朗读卡片：参考画面 / 当前原型</h1>
+    <div class="compare">
+      <figure><figcaption>参考画面</figcaption><img src="/reference/floating-source.jpg" alt="原始悬浮朗读卡片参考" /></figure>
+      <figure><figcaption>当前原型</figcaption><div class="prototype-frame"><iframe src="/?qa=floating" title="当前悬浮朗读原型"></iframe></div></figure>
+    </div>
+  </body>
+</html>

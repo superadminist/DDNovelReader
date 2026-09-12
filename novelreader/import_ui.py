@@ -321,7 +321,7 @@ class ImportMixin:
     def _import_many(self, paths):
         """批量导入：弹出进度条窗口，后台线程逐本解析分章，全部完成后刷新书架。"""
         total = len(paths)
-        self._first_imported_bid = None
+        self._last_imported_bid = None
         # 重复书籍处理：弹一次确认，避免直接覆盖/重解析百万字大书造成假死
         force_reparse = set()
         dups = []
@@ -409,13 +409,12 @@ class ImportMixin:
                     win.grab_release()
                     win.destroy()
                     self._refresh_bookshelf()
-                    # 打开第一本成功导入的书
-                    if getattr(self, "_first_imported_bid", None):
-                        self.open_book(self._first_imported_bid)
+                    # 按新版内容库规则打开最后一本成功导入的书。
+                    if getattr(self, "_last_imported_bid", None):
+                        self.open_book(self._last_imported_bid)
                     return
                 if msg[0] == "ok":
-                    if getattr(self, "_first_imported_bid", None) is None:
-                        self._first_imported_bid = msg[1]
+                    self._last_imported_bid = msg[1]
                 prog_var.set(prog_var.get() + 1)
                 info_lbl.configure(text=f"{int(prog_var.get())} / {total}")
                 name_lbl.configure(text=msg[1] if msg[0] == "ok" else f"失败：{msg[1]}：{msg[2]}")

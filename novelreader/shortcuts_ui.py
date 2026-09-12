@@ -41,8 +41,8 @@ class ShortcutsMixin:
         # ---- 文件 / 书架 ----
         r.bind("<Control-o>", lambda e: self._add_book())
         r.bind("<Control-O>", lambda e: self._add_book())
-        r.bind("<Control-b>", lambda e: self._toggle_shelf())
-        r.bind("<Control-B>", lambda e: self._toggle_shelf())
+        r.bind("<Control-b>", lambda e: self._show_library_page() if hasattr(self, "_show_library_page") else self._toggle_shelf())
+        r.bind("<Control-B>", lambda e: self._show_library_page() if hasattr(self, "_show_library_page") else self._toggle_shelf())
         # ---- 字体 / 排版 ----
         r.bind("<Control-plus>", lambda e: self._change_font_size(1))
         r.bind("<Control-equal>", lambda e: self._change_font_size(1))
@@ -73,6 +73,8 @@ class ShortcutsMixin:
         # ---- 导航 / 视图 ----
         r.bind("<Control-l>", lambda e: self._toggle_toc())
         r.bind("<Control-L>", lambda e: self._toggle_toc())
+        r.bind("<Control-Shift-f>", lambda e: self._toggle_floating_reader())
+        r.bind("<Control-Shift-F>", lambda e: self._toggle_floating_reader())
         r.bind("<Control-Prior>", lambda e: self._goto_chapter(self.chapter_idx - 1))
         r.bind("<Control-Next>", lambda e: self._goto_chapter(self.chapter_idx + 1))
         r.bind("<F11>", lambda e: self._toggle_fullscreen())

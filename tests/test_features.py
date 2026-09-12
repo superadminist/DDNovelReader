@@ -185,6 +185,7 @@ def main():
     check("工具条已隐藏", app._toolbar.winfo_manager() == "")
     def _shelf_in_paned(app):
         return str(app._left) in [str(p) for p in app._inner_paned.panes()]
+    shelf_before_fullscreen = _shelf_in_paned(app)
     check("全屏时书架已隐藏", not _shelf_in_paned(app))
     check("悬浮条已作为顶部信息条显示", app._overlay.winfo_manager() == "grid")
 
@@ -197,16 +198,16 @@ def main():
     root.update_idletasks()
     check("退出全屏状态", app._fullscreen is False)
     check("工具条已恢复", app._toolbar.winfo_manager() == "grid")
-    check("书架已恢复显示", _shelf_in_paned(app))
+    check("书架可见状态已恢复", _shelf_in_paned(app) == shelf_before_fullscreen)
     check("悬浮条已移除", app._overlay.winfo_manager() == "")
 
     # --- 书架收起/展开 ---
     app._toggle_shelf()
     root.update_idletasks()
-    check("书架收起", not _shelf_in_paned(app))
+    check("书架切换", _shelf_in_paned(app) != shelf_before_fullscreen)
     app._toggle_shelf()
     root.update_idletasks()
-    check("书架展开", _shelf_in_paned(app))
+    check("书架切换恢复", _shelf_in_paned(app) == shelf_before_fullscreen)
 
     # --- 缓存管理辅助 ---
     cdir = cache_dir()
@@ -240,6 +241,7 @@ def main():
     check("Alt+Enter 已绑定", app.root.bind("<Alt-Return>") != "")
     check("Esc 已绑定", app.root.bind("<Escape>") != "")
     check("Ctrl+O 已绑定", app.root.bind("<Control-o>") != "" or app.root.bind("<Control-O>") != "")
+    check("Ctrl+Shift+F 已绑定", app.root.bind("<Control-Shift-f>") != "" or app.root.bind("<Control-Shift-F>") != "")
 
     # --- 主题快捷键 ---
     app._set_theme("夜间")
@@ -284,12 +286,13 @@ def main():
     # --- v1.8：空行模式下高亮/滚动位置映射 ---
     pcontent = "第一段文字。第二段文字。\n第三段文字。第四段文字。"
     app.settings["paragraph_mode"] = 1
-    check("映射-不压缩行1", app._transformed_pos(pcontent, 0) == (1, 0), str(app._transformed_pos(pcontent, 0)))
-    check("映射-不压缩行2", app._transformed_pos(pcontent, 13) == (2, 0), str(app._transformed_pos(pcontent, 13)))
+    body_line = app._body_start_line
+    check("映射-不压缩行1", app._transformed_pos(pcontent, 0) == (body_line, 0), str(app._transformed_pos(pcontent, 0)))
+    check("映射-不压缩行2", app._transformed_pos(pcontent, 13) == (body_line + 1, 0), str(app._transformed_pos(pcontent, 13)))
     app.settings["paragraph_mode"] = 2
-    check("映射-合并为一行", app._transformed_pos(pcontent, 13) == (3, 0), str(app._transformed_pos(pcontent, 13)))
+    check("映射-合并为一行", app._transformed_pos(pcontent, 13) == (body_line + 2, 0), str(app._transformed_pos(pcontent, 13)))
     app.settings["paragraph_mode"] = 3
-    check("映射-清理所有行", app._transformed_pos(pcontent, 13) == (1, 12), str(app._transformed_pos(pcontent, 13)))
+    check("映射-清理所有行", app._transformed_pos(pcontent, 13) == (body_line, 12), str(app._transformed_pos(pcontent, 13)))
     app.settings["paragraph_mode"] = 1
     # 三种模式下高亮都能正确命中句子
     app.book = book_loader.BookContent(
@@ -331,7 +334,7 @@ def main():
     paras = [f"第{i+1}段的第一句话内容。第二句话内容在这里。" for i in range(120)]
     one_line = "".join(paras)  # 全文一行，无换行
     m3 = book_loader.BookContent("长书", "", "txt", [book_loader.Chapter("第一章", one_line)])
-    bid3 = "m3book"
+    bid3 = app.storage.book_id("m3.txt")
     meta3 = {"id": bid3, "title": "长书", "author": "", "format": "txt", "path": "m3.txt",
              "added_at": time.time(), "last_read_at": time.time(), "total_chars": m3.total_chars,
              "chapter_titles": ["第一章"],
@@ -341,10 +344,16 @@ def main():
     app.open_book(bid3)
     app.settings["paragraph_mode"] = 3
     app._render_chapter()
+    app._show_reader_page()
+    # 像素级滚动断言需要窗口真正参与布局；前面的全屏测试在隐藏根窗口下
+    # 可能恢复成 1x1，因此这里同时给出可用视口，其余测试仍保持隐藏。
+    root.geometry("1365x820")
+    root.deiconify()
     for _ in range(4):
         root.update_idletasks()
         root.update()
     m3_follow = True
+    m3_positions = []
     for label, off in (("开头", 0), ("中间", len(one_line) // 2), ("靠后", int(len(one_line) * 0.85))):
         target = one_line[off:off + 8]
         app._highlight_sentence(0, off, target)
@@ -354,9 +363,11 @@ def main():
             root.update()
         top_idx = app.text.index("@0,0")
         hl_idx = app.text.index(app._highlight_index[1])
+        m3_positions.append((label, top_idx, hl_idx, app.text.winfo_width(), app.text.winfo_height()))
         if top_idx.split(".")[0] != hl_idx.split(".")[0]:
             m3_follow = False
-    check("模式3高亮跟随（像素钉顶）", m3_follow, "")
+    root.withdraw()
+    check("模式3高亮跟随（像素钉顶）", m3_follow, str(m3_positions))
 
     # --- v1.9：朗读中手动换章后继续朗读 ---
     class _FakeTTS:
@@ -423,7 +434,7 @@ def main():
             book_loader.Chapter("第一章", "第一章第一句。第一章第二句。"),
             book_loader.Chapter("第二章", "第二章第一句。第二章第二句。"),
         ])
-        cbid = "cachebook"
+        cbid = app.storage.book_id("c.txt")
         cmeta = {"id": cbid, "title": "缓存书", "author": "", "format": "txt", "path": "c.txt",
                  "added_at": time.time(), "last_read_at": time.time(), "total_chars": cache_book.total_chars,
                  "chapter_titles": [c.title for c in cache_book.chapters],
@@ -598,13 +609,16 @@ def main():
     ])
     app.book = _map_book
     app.chapter_idx = 0
+    app.char_offset = 0
+    app._render_chapter()
     _line2start = len("第一行第一段。\n")
+    _body_line = app._body_start_line
     app.settings["paragraph_mode"] = 1
-    check("模式1 第1行→偏移0", app._display_line_to_offset(1) == 0)
-    check("模式1 第2行→段起点", app._display_line_to_offset(2) == _line2start)
+    check("模式1 正文第1行→偏移0", app._display_line_to_offset(_body_line) == 0)
+    check("模式1 正文第2行→段起点", app._display_line_to_offset(_body_line + 1) == _line2start)
     app.settings["paragraph_mode"] = 2
-    check("模式2 显示行1→偏移0", app._display_line_to_offset(1) == 0)
-    check("模式2 显示行3→第2段起点", app._display_line_to_offset(3) == _line2start)
+    check("模式2 正文第1行→偏移0", app._display_line_to_offset(_body_line) == 0)
+    check("模式2 正文第3行→第2段起点", app._display_line_to_offset(_body_line + 2) == _line2start)
     app.settings["paragraph_mode"] = 3
     check("模式3 任意行→偏移0", app._display_line_to_offset(5) == 0)
     app.settings["paragraph_mode"] = 1

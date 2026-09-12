@@ -10,9 +10,8 @@ if not exist "%PY%" (
   exit /b 1
 )
 
-rem 为精简版 Python 补全 Tcl/Tk 库路径（tkinter 必需）
-set "TCL_LIBRARY=%~dp0.venv\Lib\tcl8.6"
-set "TK_LIBRARY=%~dp0.venv\Lib\tk8.6"
+rem novelreader\main.py discovers Tcl/Tk from the base Python installation.
+rem A standard Windows venv does not copy the Tcl/Tk script libraries.
 
 echo 正在启动多多朗读...
 "%PY%" "%~dp0novelreader\main.py"

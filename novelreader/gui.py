@@ -23,6 +23,7 @@ from .storage import (
     audio_cache_dirs,
 )
 from .tts_engine import SpeechController
+from .modern_ui import ModernMethods, build_modern_ui
 from .constants import (
     THEMES,
     UI_THEMES,
@@ -35,7 +36,7 @@ from .constants import (
 )
 
 
-class NovelReaderBase:
+class NovelReaderBase(ModernMethods):
     """基类：启动加载、UI 构建、公共缓存统计与工具方法。"""
     def __init__(self, root):
         self.root = root
@@ -113,6 +114,12 @@ class NovelReaderBase:
         self.root.after(180, lambda: self._animate_loading(n + 1))
     def _startup_load(self):
         """窗口显示后的后台启动加载：打开上次书 + 刷新书架（Text 已布局，see() 快）。"""
+        # 极快导入、自动化或恢复流程可能在 after(30) 触发前已经打开书籍；
+        # 此时不能再用启动占位覆盖刚渲染的正文。
+        if self.book is not None:
+            self._loading_done = True
+            self._migrate_tts_cache_bg()
+            return
         try:
             self._animate_loading()
             if self.settings.get("auto_open_last", True):
@@ -438,6 +445,11 @@ class NovelReaderBase:
         except Exception:
             pass
     def _build_ui(self):
+        """构建 prototype 对应的新版桌面界面。"""
+        build_modern_ui(self)
+
+    def _build_legacy_ui(self):
+        """旧界面源码参考；新版运行路径不再调用。"""
         self.root.title(f"多多朗读 v{__version__}")
         # 每次启动固定 1280x720 并居中
         self.root.geometry(self._default_geometry())
@@ -792,7 +804,7 @@ class NovelReaderBase:
             self.tts.set_voice(self._voice_ids[idx])
         elif voices:
             # 默认使用第一个本地（系统）语音
-            idx = getattr(self, "_first_sapi_idx", 0)
+            idx = min(max(0, int(getattr(self, "_first_sapi_idx", 0))), len(voices) - 1)
             self.voice_cb.current(idx)
             self.tts.set_voice(self._voice_ids[idx])
         self._apply_theme(theme)
@@ -850,7 +862,14 @@ class NovelReaderBase:
         size = int(self.settings.get("font_size", 17))
         ls = float(self.settings.get("line_spacing", 1.5))
         indent = round(size * 2.0) if self.settings.get("first_line_indent", True) else 0
-        self.text.configure(font=(fam, size))
+        self.text.configure(
+            font=(fam, size),
+            wrap="char" if int(self.settings.get("paragraph_mode", 1)) == 3 else "word",
+        )
+        try:
+            self._visible_size_label.configure(text=str(size))
+        except Exception:
+            pass
         self.text.tag_configure(
             "body",
             spacing1=0,
@@ -895,6 +914,10 @@ class NovelReaderBase:
             return f"{n / 1024:.1f} KB"
         return f"{n / 1024 / 1024:.2f} MB"
     def _on_close(self):
+        try:
+            self._destroy_floating_reader(save=True)
+        except Exception:
+            pass
         self.tts.stop()
         try:
             # 关闭时自动暂停所有书的音频缓存：保留进度，下次可「继续上次下载」，避免无用功
@@ -919,6 +942,11 @@ class NovelReaderBase:
             self.storage.set_setting("window_geometry", self.root.geometry())
         except Exception:
             pass
+        try:
+            for callback_id in self.root.tk.call("after", "info"):
+                self.root.after_cancel(callback_id)
+        except Exception:
+            pass
         self.root.destroy()
 
 # ============ Mixin 组装 ============
@@ -933,8 +961,6 @@ from .download_ui import DownloadMixin
 from .shortcuts_ui import ShortcutsMixin
 from .bookmark_ui import BookmarkMixin
 from .search_ui import SearchMixin
-
-
 class NovelReaderApp(
     NovelReaderBase,
     ShelfMixin,
