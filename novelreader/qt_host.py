@@ -127,6 +127,7 @@ class FloatingReaderWindow(QMainWindow):
         self.bridge = bridge
         self._profile = profile
         self._allow_close = False
+        self._applying_geometry_clamp = False
         self._settings: dict = {}
         self.setWindowTitle("多多朗读 - 悬浮朗读")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
@@ -200,12 +201,18 @@ class FloatingReaderWindow(QMainWindow):
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
-        if hasattr(self, "_geometry_timer"):
+        if (
+            hasattr(self, "_geometry_timer")
+            and not self._applying_geometry_clamp
+        ):
             self._geometry_timer.start()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if hasattr(self, "_geometry_timer"):
+        if (
+            hasattr(self, "_geometry_timer")
+            and not self._applying_geometry_clamp
+        ):
             self._geometry_timer.start()
 
     def _persist_geometry(self) -> None:
@@ -213,7 +220,11 @@ class FloatingReaderWindow(QMainWindow):
             qt_geometry_string(self.geometry()), self._available_work_areas()
         )
         if rect != self.geometry():
-            self.setGeometry(rect)
+            self._applying_geometry_clamp = True
+            try:
+                self.setGeometry(rect)
+            finally:
+                self._applying_geometry_clamp = False
         self.bridge.floatingGeometryChanged(qt_geometry_string(rect))
 
     def _available_work_areas(self) -> list[QRect]:

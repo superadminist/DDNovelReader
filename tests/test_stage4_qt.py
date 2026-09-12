@@ -14,6 +14,7 @@ from novelreader.floating_reader_service import (
 )
 from novelreader.qt_bridge import DesktopBridge
 from novelreader.qt_host import (
+    FloatingReaderWindow,
     clamp_floating_geometry,
     floating_frontend_url,
     qt_geometry_string,
@@ -122,6 +123,39 @@ class _Window(QObject):
         self.shutdown_count += 1
 
 
+class _GeometryBridge:
+    def __init__(self):
+        self.saved = []
+
+    def floatingGeometryChanged(self, geometry):
+        self.saved.append(geometry)
+
+
+class _FloatingGeometryHarness:
+    """Exercise the real live-clamp method without starting QtWebEngine."""
+
+    def __init__(self, rect, work_areas):
+        self._rect = QRect(rect)
+        self._work_areas = work_areas
+        self._applying_geometry_clamp = False
+        self.bridge = _GeometryBridge()
+        self.set_count = 0
+        self.recursive_move_timer_started = False
+
+    def geometry(self):
+        return QRect(self._rect)
+
+    def _available_work_areas(self):
+        return self._work_areas
+
+    def setGeometry(self, rect):
+        self.set_count += 1
+        self._rect = QRect(rect)
+        # A real setGeometry emits move/resize events synchronously.  Record
+        # whether the guard would allow those events to restart the timer.
+        self.recursive_move_timer_started = not self._applying_geometry_clamp
+
+
 class Stage4FloatingServiceTests(unittest.TestCase):
     def test_settings_normalize_persist_and_preserve_library(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -186,6 +220,19 @@ class Stage4FloatingServiceTests(unittest.TestCase):
 
     def test_floating_surface_url_is_frozen(self):
         self.assertEqual(floating_frontend_url().query(), "surface=floating")
+
+    def test_live_persist_clamps_fully_offscreen_geometry_without_recursion(self):
+        harness = _FloatingGeometryHarness(
+            QRect(9000, 9000, 640, 320),
+            [QRect(0, 0, 1280, 720), QRect(-1920, 0, 1920, 1080)],
+        )
+
+        FloatingReaderWindow._persist_geometry(harness)
+
+        self.assertEqual(harness.geometry(), QRect(640, 400, 640, 320))
+        self.assertEqual(harness.bridge.saved, ["640x320+640+400"])
+        self.assertEqual(harness.set_count, 1)
+        self.assertFalse(harness.recursive_move_timer_started)
 
 
 class Stage4BridgeTests(unittest.TestCase):
