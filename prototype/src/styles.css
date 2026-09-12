@@ -347,6 +347,55 @@ input[type="range"] { height: 3px; accent-color: #6875d8; cursor: pointer; }
 
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; background: rgba(31, 36, 49, .22); backdrop-filter: blur(5px); }
 .paste-modal { width: min(560px, calc(100vw - 40px)); padding: 24px; border: 1px solid rgba(255,255,255,.8); border-radius: 20px; background: rgba(251,252,254,.96); box-shadow: 0 34px 90px rgba(32,38,55,.28); }
+.settings-modal { max-height: min(680px, calc(100vh - 40px)); overflow-y: auto; }
+.settings-section { padding: 15px 0; border-top: 1px solid #e5e8ee; }
+.settings-section h3 { margin: 0 0 10px; font-size: 13px; }
+.settings-section p { margin: 0; color: #7e8796; font-size: 11px; line-height: 1.65; }
+.theme-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.theme-options button { height: 36px; border: 1px solid #dde2eb; border-radius: 10px; color: #687182; background: #f7f8fb; cursor: pointer; font-size: 12px; }
+.theme-options button.selected { border-color: #7c87df; color: #5361c7; background: #eceeff; box-shadow: inset 0 0 0 1px #7c87df; }
+.about-section { padding-bottom: 0; }
+
+.prototype-stage[data-theme="白天"] .library-page,
+.prototype-stage[data-theme="白天"] .reading-sheet { background: rgba(255,255,255,.94); }
+.prototype-stage[data-theme="米黄"] .library-page,
+.prototype-stage[data-theme="米黄"] .reading-sheet { background: #f6efdf; }
+.theme-dark { color: #e7e9ef; background: radial-gradient(circle at 15% 80%, #283336, transparent 32%), linear-gradient(145deg, #222631, #292735); }
+.theme-dark .mac-window { border-color: #414754; background: rgba(31,34,43,.96); box-shadow: 0 34px 90px rgba(0,0,0,.4); }
+.theme-dark .mac-titlebar,
+.theme-dark .rail { border-color: #414754; background: rgba(37,41,51,.96); }
+.theme-dark .app-title,
+.theme-dark .library-heading h1,
+.theme-dark .section-title h2,
+.theme-dark .book-card > strong,
+.theme-dark .toolbar-title,
+.theme-dark .chapter-list button strong,
+.theme-dark .reading-copy,
+.theme-dark .reader-player strong,
+.theme-dark .settings-section h3 { color: #eceef4; }
+.theme-dark .library-page,
+.theme-dark .reader-page,
+.theme-dark .reader-toolbar,
+.theme-dark .toc-panel,
+.theme-dark .reading-sheet,
+.theme-dark .reader-player { border-color: #414754; background: rgba(31,34,43,.96); }
+.theme-dark .import-card,
+.theme-dark .search-field,
+.theme-dark .quiet-button,
+.theme-dark .bookmarks-panel,
+.theme-dark .search-panel,
+.theme-dark .paste-modal,
+.theme-dark .selection-list > div { border-color: #4b5160; color: #e1e4eb; background: #343944; }
+.theme-dark input,
+.theme-dark textarea,
+.theme-dark select { color: #eceef4; background: #2c303a; }
+.theme-dark .subtle,
+.theme-dark .book-card > small,
+.theme-dark .section-title span,
+.theme-dark .chapter-list button span,
+.theme-dark .settings-section p { color: #a5adbb; }
+.theme-dark .theme-options button { border-color: #4b5160; color: #c7ccd6; background: #2c303a; }
+.theme-dark .theme-options button.selected { border-color: #8994ef; color: #cbd0ff; background: #41486d; }
 .modal-header { margin-bottom: 21px; display: flex; align-items: flex-start; justify-content: space-between; }
 .modal-header > div { display: flex; align-items: center; gap: 12px; }
 .modal-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: #5866c8; background: #e8eaff; }

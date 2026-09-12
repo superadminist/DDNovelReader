@@ -45,7 +45,9 @@ function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
 }
 
 const EMPTY_DATA = {
+  app: { version: "2.0.0" },
   library: { books: [], total: 0 },
+  preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, startupBookId: "" },
   window: { isMaximized: false },
   capabilities: {
     fileImport: false,
@@ -77,6 +79,7 @@ const PLAYBACK_STATUSES = new Set(["idle", "playing", "paused", "finished", "err
 const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", "nextSentence"]);
 const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "finished", "fallback", "error"]);
 const FLOATING_BACKGROUNDS = new Set(["light", "sepia", "dark"]);
+const APP_THEMES = new Set(["白天", "护眼", "夜间", "米黄"]);
 const WINDOW_RESIZE_EDGES = new Set(["top", "right", "bottom", "left", "topRight", "bottomRight", "bottomLeft", "topLeft"]);
 const FLOATING_SETTING_FIELDS = {
   topmost: "boolean",
@@ -115,6 +118,17 @@ function validBook(book) {
   );
 }
 
+function validAppPreferences(preferences) {
+  return Boolean(
+    preferences
+    && APP_THEMES.has(preferences.theme)
+    && ["light", "dark"].includes(preferences.colorScheme)
+    && (preferences.colorScheme === "dark") === (preferences.theme === "夜间")
+    && typeof preferences.autoOpenLast === "boolean"
+    && typeof preferences.startupBookId === "string",
+  );
+}
+
 function parseJsonPayload(raw, invalidMessage) {
   try {
     return typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -149,6 +163,7 @@ function parseBridgeResponse(raw, validateData) {
 const NOOP_CONTROLS = Object.freeze({
   minimizeWindow() {},
   toggleMaximizeWindow() {},
+  toggleFullscreen() {},
   closeWindow() {},
   startWindowMove() {},
   startWindowResize() {},
@@ -190,6 +205,8 @@ export function parseInitialState(raw) {
     typeof payload.ok !== "boolean"
     || !validBridgeError(payload.error)
     || !validBooks
+    || typeof payload.data?.app?.version !== "string"
+    || !validAppPreferences(payload.data?.preferences)
     || typeof payload.data.library.total !== "number"
     || typeof payload.data?.window?.isMaximized !== "boolean"
     || !validCapabilities
@@ -732,9 +749,30 @@ function nativeControls(nativeBridge) {
   return {
     minimizeWindow: () => nativeBridge.minimizeWindow(),
     toggleMaximizeWindow: () => nativeBridge.toggleMaximizeWindow(),
+    toggleFullscreen: () => nativeBridge.toggleFullscreen(),
     closeWindow: () => nativeBridge.closeWindow(),
     startWindowMove: () => nativeBridge.startWindowMove(),
     startWindowResize: (edge) => nativeBridge.startWindowResize(edge),
+  };
+}
+
+function nativeApp(nativeBridge) {
+  return {
+    async updatePreferences(input) {
+      const patch = input?.patch;
+      const validPatch = patch
+        && !Array.isArray(patch)
+        && Object.keys(patch).length > 0
+        && Object.entries(patch).every(([field, value]) => (
+          (field === "theme" && APP_THEMES.has(value))
+          || (field === "autoOpenLast" && typeof value === "boolean")
+        ));
+      if (!validPatch) throw new BridgeProtocolError("应用设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "updateAppPreferences", [JSON.stringify(input)]),
+        validAppPreferences,
+      );
+    },
   };
 }
 
@@ -754,6 +792,7 @@ function createNativeConnection(nativeBridge, initialState) {
     mode: "native",
     initialState,
     controls: nativeControls(nativeBridge),
+    app: nativeApp(nativeBridge),
     imports: nativeImports(nativeBridge),
     reader: nativeReader(nativeBridge),
     floating: nativeFloating(nativeBridge),
@@ -764,6 +803,15 @@ function createNativeConnection(nativeBridge, initialState) {
     },
     onWindowStateChanged(callback) {
       signalSubscription(nativeBridge.windowStateChanged, callback, subscriptions);
+    },
+    onAppPreferencesChanged(callback) {
+      signalSubscription(nativeBridge.appPreferencesChanged, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validAppPreferences, "应用设置事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
     },
     onImportProgress(callback) {
       signalSubscription(nativeBridge.importProgress, (raw) => {
@@ -841,6 +889,7 @@ function createDemoConnection() {
   const readerSearchCallbacks = new Set();
   const readerPlaybackCallbacks = new Set();
   const floatingChangedCallbacks = new Set();
+  const appPreferencesCallbacks = new Set();
   const jobs = new Map();
   let jobSequence = 0;
   let readerSequence = 0;
@@ -947,6 +996,15 @@ function createDemoConnection() {
     mode: "demo",
     initialState,
     controls: NOOP_CONTROLS,
+    app: {
+      async updatePreferences(input) {
+        const next = { ...initialState.data.preferences, ...input.patch };
+        next.colorScheme = next.theme === "夜间" ? "dark" : "light";
+        initialState.data.preferences = next;
+        emit(appPreferencesCallbacks, next);
+        return response(next);
+      },
+    },
     imports: {
       async selectFiles() {
         const items = [
@@ -1067,6 +1125,7 @@ function createDemoConnection() {
     },
     onBridgeError() {},
     onWindowStateChanged() {},
+    onAppPreferencesChanged(callback) { appPreferencesCallbacks.add(callback); },
     onImportProgress(callback) { progressCallbacks.add(callback); },
     onImportFinished(callback) { finishedCallbacks.add(callback); },
     onReaderOpened(callback) { readerOpenedCallbacks.add(callback); },
@@ -1082,6 +1141,7 @@ function createDemoConnection() {
       readerSearchCallbacks.clear();
       readerPlaybackCallbacks.clear();
       floatingChangedCallbacks.clear();
+      appPreferencesCallbacks.clear();
     },
   };
 }

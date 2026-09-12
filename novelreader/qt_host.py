@@ -249,6 +249,7 @@ class DesktopWindow(QMainWindow):
         # profile owned by this window.
         self._view = QWebEngineView(self)
         self._profile = QWebEngineProfile(self)
+        self._fullscreen_restore_maximized = False
         self._interceptor = OfflineRequestInterceptor(self._profile)
         self._profile.setUrlRequestInterceptor(self._interceptor)
 
@@ -330,6 +331,16 @@ class DesktopWindow(QMainWindow):
         if self._floating_window is None or not self._floating_window.isVisible():
             return None
         return self._floating_window.windowHandle()
+
+    def toggleFullscreenWindow(self) -> None:
+        if self.isFullScreen():
+            if self._fullscreen_restore_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+            return
+        self._fullscreen_restore_maximized = self.isMaximized()
+        self.showFullScreen()
 
     def shutdownFloatingReaderWindow(self) -> None:
         if self._floating_window is None:

@@ -53,6 +53,7 @@ function nativeEnvironment(response) {
   const nativeBridge = {
     bridgeError: signal(),
     windowStateChanged: signal(),
+    appPreferencesChanged: signal(),
     importProgress: signal(),
     importFinished: signal(),
     readerOpened: signal(),
@@ -105,10 +106,12 @@ function nativeEnvironment(response) {
     showFloatingReader(callback) { calls.push(["showFloatingReader"]); callback(ok(floatingFixture({ visible: true }))); },
     closeFloatingReader(callback) { calls.push(["closeFloatingReader"]); callback(ok({ closed: true })); },
     updateFloatingReaderSettings(input, callback) { calls.push(["updateFloatingReaderSettings", input]); const fixture = floatingFixture(); callback(ok({ ...fixture, settings: { ...fixture.settings, ...JSON.parse(input).patch } })); },
+    updateAppPreferences(input, callback) { calls.push(["updateAppPreferences", input]); const patch = JSON.parse(input).patch; const preferences = { ...response.data.preferences, ...patch }; preferences.colorScheme = preferences.theme === "夜间" ? "dark" : "light"; callback(ok(preferences)); },
     startFloatingWindowMove() { calls.push(["startFloatingWindowMove"]); },
     startFloatingWindowResize(edge) { calls.push(["startFloatingWindowResize", edge]); },
     minimizeWindow() { calls.push(["minimizeWindow"]); },
     toggleMaximizeWindow() { calls.push(["toggleMaximizeWindow"]); },
+    toggleFullscreen() { calls.push(["toggleFullscreen"]); },
     closeWindow() { calls.push(["closeWindow"]); },
     startWindowMove() { calls.push(["startWindowMove"]); },
     startWindowResize(edge) { calls.push(["startWindowResize", edge]); },
@@ -152,6 +155,7 @@ test("native provider validates schema and delegates window controls", async () 
   const connection = await connectBridge({ window: env.browserWindow, document: null });
   connection.controls.minimizeWindow();
   connection.controls.toggleMaximizeWindow();
+  connection.controls.toggleFullscreen();
   connection.controls.startWindowMove();
   connection.controls.startWindowResize("topLeft");
   connection.controls.closeWindow();
@@ -160,10 +164,34 @@ test("native provider validates schema and delegates window controls", async () 
   assert.deepEqual(env.calls, [
     ["minimizeWindow"],
     ["toggleMaximizeWindow"],
+    ["toggleFullscreen"],
     ["startWindowMove"],
     ["startWindowResize", "topLeft"],
     ["closeWindow"],
   ]);
+});
+
+test("native application preferences preserve legacy themes and validate events", async () => {
+  const env = nativeEnvironment(createDemoInitialState());
+  const connection = await connectBridge({ window: env.browserWindow, document: null });
+  const events = [];
+  const errors = [];
+  connection.onAppPreferencesChanged((preferences) => events.push(preferences));
+  connection.onBridgeError((raw) => errors.push(JSON.parse(raw)));
+
+  const updated = await connection.app.updatePreferences({ patch: { theme: "夜间", autoOpenLast: false } });
+  assert.equal(updated.data.colorScheme, "dark");
+  assert.deepEqual(env.calls, [["updateAppPreferences", JSON.stringify({ patch: { theme: "夜间", autoOpenLast: false } })]]);
+  env.nativeBridge.appPreferencesChanged.emit(JSON.stringify(updated.data));
+  env.nativeBridge.appPreferencesChanged.emit(JSON.stringify({ ...updated.data, colorScheme: "light" }));
+  assert.equal(events.length, 1);
+  assert.equal(errors.at(-1).code, "BRIDGE_INVALID_PAYLOAD");
+  await assert.rejects(
+    connection.app.updatePreferences({ patch: { theme: "蓝色" } }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  connection.dispose();
+  assert.equal(env.nativeBridge.appPreferencesChanged.size, 0);
 });
 
 test("native import controls use the frozen slot names and serialize inputs", async () => {

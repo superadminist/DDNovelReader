@@ -61,6 +61,7 @@ class DesktopBridgeTests(unittest.TestCase):
                 self.maximized = False
                 self.minimized = False
                 self.closed = False
+                self.fullscreen_toggles = 0
                 self.handle = FakeHandle()
 
             def isMaximized(self):
@@ -77,6 +78,9 @@ class DesktopBridgeTests(unittest.TestCase):
 
             def close(self):
                 self.closed = True
+
+            def toggleFullscreenWindow(self):
+                self.fullscreen_toggles += 1
 
             def windowHandle(self):
                 return self.handle
@@ -100,6 +104,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["library"]["total"], 1)
+        self.assertEqual(payload["data"]["app"]["version"], "2.0.0")
+        self.assertEqual(payload["data"]["preferences"]["theme"], "护眼")
+        self.assertTrue(payload["data"]["preferences"]["autoOpenLast"])
         capabilities = payload["data"]["capabilities"]
         self.assertTrue(capabilities["fileImport"])
         self.assertTrue(capabilities["pasteImport"])
@@ -118,6 +125,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertIn("cancelImport(QString)", signatures)
         self.assertIn("importProgress(QString)", signatures)
         self.assertIn("importFinished(QString)", signatures)
+        self.assertIn("updateAppPreferences(QString)", signatures)
+        self.assertIn("appPreferencesChanged(QString)", signatures)
+        self.assertIn("toggleFullscreen()", signatures)
 
     def test_library_error_is_a_safe_failure_envelope(self):
         class BrokenLibrary:
@@ -133,12 +143,14 @@ class DesktopBridgeTests(unittest.TestCase):
         state_spy = QSignalSpy(self.bridge.windowStateChanged)
         self.bridge.minimizeWindow()
         self.bridge.toggleMaximizeWindow()
+        self.bridge.toggleFullscreen()
         self.bridge.startWindowMove()
         self.bridge.startWindowResize("bottomRight")
         self.bridge.closeWindow()
 
         self.assertTrue(self.window.minimized)
         self.assertTrue(self.window.maximized)
+        self.assertEqual(self.window.fullscreen_toggles, 1)
         self.assertEqual(self.window.handle.moves, 1)
         self.assertEqual(len(self.window.handle.resize_edges), 1)
         self.assertTrue(self.window.closed)
@@ -149,6 +161,25 @@ class DesktopBridgeTests(unittest.TestCase):
 
         self.bridge.toggleMaximizeWindow()
         self.assertFalse(self.window.maximized)
+
+    def test_app_preferences_are_validated_persisted_and_emitted(self):
+        preference_spy = QSignalSpy(self.bridge.appPreferencesChanged)
+        payload = json.loads(self.bridge.updateAppPreferences(json.dumps({
+            "patch": {"theme": "夜间", "autoOpenLast": False}
+        })))
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["colorScheme"], "dark")
+        self.assertFalse(payload["data"]["autoOpenLast"])
+        self.assertEqual(preference_spy.count(), 1)
+        stored = json.loads((self.data_dir / "library.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["settings"]["theme"], "夜间")
+        self.assertFalse(stored["settings"]["auto_open_last"])
+
+        rejected = json.loads(self.bridge.updateAppPreferences(json.dumps({
+            "patch": {"theme": "蓝色"}
+        })))
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(rejected["error"]["code"], "INVALID_REQUEST")
 
     def test_invalid_resize_edge_emits_bridge_error(self):
         error_spy = QSignalSpy(self.bridge.bridgeError)

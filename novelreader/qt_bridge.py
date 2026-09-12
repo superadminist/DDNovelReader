@@ -14,6 +14,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 
+from . import __version__
+from .app_service import AppPreferencesError, AppPreferencesService
 from .floating_reader_service import FloatingReaderError, FloatingReaderService
 from .import_service import ImportCandidate, ImportServiceError, LibraryImportService
 from .library_service import LibraryDataError, LibraryQueryService
@@ -90,6 +92,7 @@ class DesktopBridge(QObject):
     readerSearchFinished = Signal(str)
     readerPlaybackChanged = Signal(str)
     floatingReaderChanged = Signal(str)
+    appPreferencesChanged = Signal(str)
 
     def __init__(
         self,
@@ -98,6 +101,7 @@ class DesktopBridge(QObject):
         importer: LibraryImportService | None = None,
         reader: ReaderService | None = None,
         playback: PlaybackService | None = None,
+        app_preferences: AppPreferencesService | None = None,
         file_picker: Callable[[], list[str]] | None = None,
     ):
         super().__init__(window)
@@ -107,6 +111,7 @@ class DesktopBridge(QObject):
         self._importer = importer or LibraryImportService(library_path)
         self._reader = reader or ReaderService(library_path)
         self._playback = playback or PlaybackService(SpeechController())
+        self._app = app_preferences or AppPreferencesService(library_path)
         self._floating = FloatingReaderService(self._playback, library_path)
         self._file_picker = file_picker or (lambda: [])
         self._selections: dict[str, tuple[ImportCandidate, ...]] = {}
@@ -130,9 +135,20 @@ class DesktopBridge(QObject):
         self._reader_timer.start()
         self._shutdown = False
 
-    def _state_data(self, library: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _state_data(
+        self,
+        library: dict[str, Any] | None = None,
+        preferences: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
+            "app": {"version": __version__},
             "library": library or {"books": [], "total": 0},
+            "preferences": preferences or {
+                "theme": "护眼",
+                "colorScheme": "light",
+                "autoOpenLast": True,
+                "startupBookId": "",
+            },
             "window": {"isMaximized": bool(self._window.isMaximized())},
             "capabilities": dict(CAPABILITIES),
         }
@@ -141,7 +157,8 @@ class DesktopBridge(QObject):
     def getInitialState(self) -> str:
         try:
             library = self._library.load_library()
-        except LibraryDataError as exc:
+            preferences = self._app.state()
+        except (LibraryDataError, AppPreferencesError) as exc:
             return _json({
                 "schemaVersion": SCHEMA_VERSION,
                 "ok": False,
@@ -168,7 +185,7 @@ class DesktopBridge(QObject):
         return _json({
             "schemaVersion": SCHEMA_VERSION,
             "ok": True,
-            "data": self._state_data(library),
+            "data": self._state_data(library, preferences),
             "error": None,
         })
 
@@ -531,6 +548,8 @@ class DesktopBridge(QObject):
     @Slot(result=str)
     def showFloatingReader(self) -> str:
         try:
+            if not self._playback.session_identity().get("sessionId"):
+                raise FloatingReaderError("READER_NOT_OPEN", "请先打开一本内容再使用悬浮朗读窗。")
             self._floating.show()
             show = getattr(self._window, "showFloatingReaderWindow", None)
             if not callable(show):
@@ -604,6 +623,28 @@ class DesktopBridge(QObject):
         if changed and self._floating.visible:
             self._emit_floating_state()
 
+    @Slot(str, result=str)
+    def updateAppPreferences(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        if request is None:
+            return self._error_response(
+                self._state_data()["preferences"],
+                "INVALID_REQUEST",
+                "应用设置请求格式不正确。",
+            )
+        try:
+            preferences = self._app.update(request.get("patch"))
+            self.appPreferencesChanged.emit(_json(preferences))
+            return self._ok_response(preferences)
+        except AppPreferencesError as exc:
+            try:
+                current = self._app.state()
+            except AppPreferencesError:
+                current = self._state_data()["preferences"]
+            return self._error_response(
+                current, exc.code, exc.user_message, exc.retryable
+            )
+
     @Slot()
     def minimizeWindow(self) -> None:
         self._window.showMinimized()
@@ -614,6 +655,16 @@ class DesktopBridge(QObject):
             self._window.showNormal()
         else:
             self._window.showMaximized()
+
+    @Slot()
+    def toggleFullscreen(self) -> None:
+        toggle = getattr(self._window, "toggleFullscreenWindow", None)
+        if callable(toggle):
+            toggle()
+        elif self._window.isFullScreen():
+            self._window.showNormal()
+        else:
+            self._window.showFullScreen()
 
     @Slot()
     def closeWindow(self) -> None:

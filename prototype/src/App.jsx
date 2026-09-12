@@ -30,9 +30,17 @@ import { connectBridge } from "./bridge.js";
 const EMPTY_CONTROLS = {
   minimizeWindow() {},
   toggleMaximizeWindow() {},
+  toggleFullscreen() {},
   closeWindow() {},
   startWindowMove() {},
   startWindowResize() {},
+};
+
+const DEFAULT_APP_PREFERENCES = {
+  theme: "护眼",
+  colorScheme: "light",
+  autoOpenLast: true,
+  startupBookId: "",
 };
 
 const EMPTY_CAPABILITIES = {
@@ -148,7 +156,7 @@ function IconButton({ label, children, active = false, onClick, className = "" }
   );
 }
 
-function Rail({ page, setPage, readerEnabled, audioEnabled }) {
+function Rail({ page, setPage, readerEnabled, audioEnabled, darkMode, onToggleDark, onOpenSettings }) {
   return (
     <aside className="rail">
       <div className="brand-mark"><BookOpen weight="fill" /></div>
@@ -158,8 +166,8 @@ function Rail({ page, setPage, readerEnabled, audioEnabled }) {
         <IconButton label="音频内容" className={!audioEnabled ? "disabled" : ""}><Headphones /></IconButton>
       </nav>
       <div className="rail-bottom">
-        <IconButton label="深色模式"><Moon /></IconButton>
-        <IconButton label="设置"><GearSix /></IconButton>
+        <IconButton label={darkMode ? "切换浅色模式" : "深色模式"} active={darkMode} onClick={onToggleDark}><Moon weight={darkMode ? "fill" : "regular"} /></IconButton>
+        <IconButton label="设置" onClick={onOpenSettings}><GearSix /></IconButton>
       </div>
     </aside>
   );
@@ -510,6 +518,19 @@ function FloatingApplication() {
       setError(caught.message || "无法关闭悬浮朗读窗。");
     }
   };
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      } else if (event.code === "Space" && !(event.target instanceof HTMLElement && event.target.closest("button, input"))) {
+        event.preventDefault();
+        controlPlayback(floatingState?.playback.status === "playing" ? "pause" : "play");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [floatingState]);
   const state = floatingState || EMPTY_FLOATING_STATE;
   return (
     <div className="floating-surface-stage">
@@ -573,13 +594,13 @@ const ReaderTextBlockView = memo(function ReaderTextBlockView({ block, highlight
   );
 });
 
-function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings, floatingAvailable, floatingVisible, onFloatingToggle }) {
+function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings, floatingAvailable, floatingVisible, onFloatingToggle, onOpenSettings }) {
   const { settings } = data;
   return (
     <div className="reader-toolbar">
       <div className="toolbar-group"><IconButton label="返回内容库" onClick={onBack}><ArrowLeft /></IconButton><IconButton label="目录" active={panelMode === "toc"} onClick={() => setPanelMode("toc")}><SidebarSimple /></IconButton><span className="toolbar-title">{data.book.title}</span></div>
       <div className="toolbar-group toolbar-center"><IconButton label="缩小字号" onClick={() => onSettings({ fontSize: Math.max(12, settings.fontSize - 1) })}><Minus /></IconButton><span className="font-value">{settings.fontSize}</span><IconButton label="放大字号" onClick={() => onSettings({ fontSize: Math.min(40, settings.fontSize + 1) })}><Plus /></IconButton><button className="speed" onClick={() => onSettings({ paragraphMode: settings.paragraphMode % 3 + 1 })}><TextAa /> 排版 {settings.paragraphMode}</button></div>
-      <div className="toolbar-group"><IconButton label="书内搜索" active={panelMode === "search"} onClick={() => setPanelMode("search")}><MagnifyingGlass /></IconButton><IconButton label="书签" active={panelMode === "bookmarks"} onClick={() => setPanelMode("bookmarks")}><PushPin /></IconButton>{floatingAvailable ? <IconButton label={floatingVisible ? "关闭悬浮朗读" : "打开悬浮朗读"} active={floatingVisible} onClick={onFloatingToggle}><CornersOut /></IconButton> : null}</div>
+      <div className="toolbar-group"><IconButton label="书内搜索" active={panelMode === "search"} onClick={() => setPanelMode("search")}><MagnifyingGlass /></IconButton><IconButton label="书签" active={panelMode === "bookmarks"} onClick={() => setPanelMode("bookmarks")}><PushPin /></IconButton>{floatingAvailable ? <IconButton label={floatingVisible ? "关闭悬浮朗读" : "打开悬浮朗读"} active={floatingVisible} onClick={onFloatingToggle}><CornersOut /></IconButton> : null}<IconButton label="更多设置" onClick={onOpenSettings}><GearSix /></IconButton></div>
     </div>
   );
 }
@@ -602,7 +623,7 @@ function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNav
   );
 }
 
-function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings, floatingAvailable, floatingVisible, onFloatingToggle }) {
+function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings, floatingAvailable, floatingVisible, onFloatingToggle, onOpenSettings }) {
   const [panelMode, setPanelMode] = useState("toc");
   const [query, setQuery] = useState("");
   const scrollTimerRef = useRef(null);
@@ -649,7 +670,7 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
 
   return (
     <section className="reader-page native-reader">
-      <NativeReaderToolbar data={data} panelMode={panelMode} setPanelMode={changePanel} onBack={onBack} onSettings={onSettings} floatingAvailable={floatingAvailable} floatingVisible={floatingVisible} onFloatingToggle={onFloatingToggle} />
+      <NativeReaderToolbar data={data} panelMode={panelMode} setPanelMode={changePanel} onBack={onBack} onSettings={onSettings} floatingAvailable={floatingAvailable} floatingVisible={floatingVisible} onFloatingToggle={onFloatingToggle} onOpenSettings={onOpenSettings} />
       <div className="reader-layout">
         <aside className="toc-panel">
           <div className="toc-title"><span>{panelMode === "toc" ? "目录" : panelMode === "search" ? "书内搜索" : "书签"}</span><small>{panelMode === "toc" ? `${data.book.chapters.length} 章` : ""}</small></div>
@@ -691,6 +712,19 @@ function ImportConfirmationModal({ selection, onClose, onStart }) {
   );
 }
 
+function SettingsModal({ preferences, version, pending, onUpdate, onClose }) {
+  const themes = ["白天", "护眼", "米黄", "夜间"];
+  return (
+    <div className="modal-backdrop"><div className="paste-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div className="modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>外观、启动与本地数据</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
+      <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={pending} onClick={() => onUpdate({ theme })}>{theme}</button>)}</div></section>
+      <section className="settings-section"><h3>启动</h3><label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={pending} onChange={(event) => onUpdate({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label></section>
+      <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 DDNovelReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
+      <section className="settings-section about-section"><h3>关于</h3><p>多多朗读 {version || "2.0.0"} · Qt WebEngine 桌面版</p></section>
+    </div></div>
+  );
+}
+
 function MainApplication() {
   const qaMode = new URLSearchParams(window.location.search).get("qa");
   const qaFloating = qaMode === "floating";
@@ -714,6 +748,10 @@ function MainApplication() {
   const [bilingual, setBilingual] = useState(false);
   const [fontSize, setFontSize] = useState(21);
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
+  const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
+  const [appVersion, setAppVersion] = useState("2.0.0");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPending, setSettingsPending] = useState(false);
   const [readerState, dispatchReader] = useReducer(readerReducer, EMPTY_READER_STATE);
   const readerOpenRequestRef = useRef("");
   const readerSessionRef = useRef("");
@@ -722,6 +760,7 @@ function MainApplication() {
   const readerSearchRequestRef = useRef("");
   const pendingOpenIntentRef = useRef(null);
   const consumedOpenIntentsRef = useRef(new Set());
+  const startupIntentConsumedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -742,9 +781,14 @@ function MainApplication() {
       setBridgeMode(connected.mode);
       setBooks(connected.mode === "demo" && qaEmptyLibrary ? [] : connected.initialState.data.library.books);
       setCapabilities(connected.initialState.data.capabilities);
+      setAppPreferences(connected.initialState.data.preferences);
+      setAppVersion(connected.initialState.data.app.version);
       setWindowControls(connected.controls);
       connected.onBridgeError((raw) => {
         if (active) setBridgeError(readBridgeMessage(raw));
+      });
+      connected.onAppPreferencesChanged((preferences) => {
+        if (active) setAppPreferences(preferences);
       });
       connected.onImportProgress((event) => {
         if (!active) return;
@@ -866,6 +910,14 @@ function MainApplication() {
       }).catch((error) => {
         if (active && connected.initialState.data.capabilities.floatingReader) setBridgeError(error.message || "无法读取悬浮朗读状态。");
       });
+      if (!startupIntentConsumedRef.current) {
+        startupIntentConsumedRef.current = true;
+        const startupBookId = connected.initialState.data.preferences.startupBookId;
+        const canAutoOpen = connected.mode === "native"
+          && connected.initialState.data.capabilities.reader
+          && connected.initialState.data.library.books.some((book) => book.id === startupBookId);
+        if (canAutoOpen) beginReaderOpen(connected, startupBookId);
+      }
       setLibraryLoading(false);
     };
     connectBridge().then(attachConnection).catch((error) => {
@@ -874,6 +926,8 @@ function MainApplication() {
       if (failedConnection) attachConnection(failedConnection);
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
+      setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
+      setAppVersion(error.initialData?.app?.version || "2.0.0");
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
     });
@@ -1101,6 +1155,20 @@ function MainApplication() {
       setBridgeError(error.message || "悬浮朗读窗操作失败。");
     }
   };
+  const updateAppPreferences = async (patch) => {
+    const connection = connectionRef.current;
+    if (!connection || settingsPending) return;
+    setSettingsPending(true);
+    try {
+      const response = await connection.app.updatePreferences({ patch });
+      setAppPreferences(response.data);
+    } catch (error) {
+      setBridgeError(error.message || "应用设置保存失败。");
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+  const toggleDarkMode = () => updateAppPreferences({ theme: appPreferences.colorScheme === "dark" ? "护眼" : "夜间" });
   const navigatePage = (nextPage) => {
     if (nextPage !== "reader" || bridgeMode === "demo" || readerState.phase === "ready") {
       setPage(nextPage);
@@ -1115,8 +1183,57 @@ function MainApplication() {
   const effectiveCapabilities = bridgeMode === "demo"
     ? { fileImport: true, pasteImport: true, webImport: true, audioImport: true }
     : capabilities;
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (event.key === "F11" || (event.altKey && event.key === "Enter")) {
+        event.preventDefault();
+        windowControls.toggleFullscreen();
+      } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        toggleFloatingReader();
+      } else if (event.ctrlKey && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        selectFiles();
+      } else if (event.ctrlKey && event.key.toLowerCase() === "p" && readerState.phase === "ready") {
+        event.preventDefault();
+        controlReaderPlayback(readerState.data.playback.status === "playing" ? "pause" : "play");
+      } else if (event.ctrlKey && event.key.toLowerCase() === "s" && readerState.phase === "ready") {
+        event.preventDefault();
+        controlReaderPlayback("stop");
+      } else if (!event.ctrlKey && !event.altKey && ["+", "="].includes(event.key) && readerState.phase === "ready") {
+        event.preventDefault();
+        updateReaderSettings({ fontSize: Math.min(48, readerState.data.settings.fontSize + 1) });
+      } else if (!event.ctrlKey && !event.altKey && event.key === "-" && readerState.phase === "ready") {
+        event.preventDefault();
+        updateReaderSettings({ fontSize: Math.max(10, readerState.data.settings.fontSize - 1) });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [readerState, settingsPending, windowControls, nativeFloatingState]);
   return (
-    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""}`}>{desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}<div className="mac-window"><MacTitlebar controls={windowControls} desktopMode={desktopMode} /><div className="app-body"><Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} /><main className="content-area">{page === "reader" && bridgeMode === "demo" ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} /> : page === "reader" && bridgeMode === "native" ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} floatingAvailable={capabilities.floatingReader} floatingVisible={Boolean(nativeFloatingState?.visible)} onFloatingToggle={toggleFloatingReader} /> : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}</main></div></div>{floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}{pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}{importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}</div>
+    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""} theme-${appPreferences.colorScheme}`} data-theme={appPreferences.theme}>
+      {desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}
+      <div className="mac-window">
+        <MacTitlebar controls={windowControls} desktopMode={desktopMode} />
+        <div className="app-body">
+          <Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} darkMode={appPreferences.colorScheme === "dark"} onToggleDark={toggleDarkMode} onOpenSettings={() => setSettingsOpen(true)} />
+          <main className="content-area">
+            {page === "reader" && bridgeMode === "demo"
+              ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} />
+              : page === "reader" && bridgeMode === "native"
+                ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} floatingAvailable={capabilities.floatingReader} floatingVisible={Boolean(nativeFloatingState?.visible)} onFloatingToggle={toggleFloatingReader} onOpenSettings={() => setSettingsOpen(true)} />
+                : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}
+          </main>
+        </div>
+      </div>
+      {floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}
+      {pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}
+      {importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}
+      {settingsOpen && <SettingsModal preferences={appPreferences} version={appVersion} pending={settingsPending} onUpdate={updateAppPreferences} onClose={() => setSettingsOpen(false)} />}
+    </div>
   );
 }
 
