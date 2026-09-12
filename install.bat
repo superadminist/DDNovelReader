@@ -13,7 +13,8 @@ echo 正在安装依赖...
 if errorlevel 1 goto :err
 
 echo.
-echo 依赖安装完成！请运行 run.bat 启动程序。
+echo 运行依赖安装完成！请运行 run.bat 启动程序。
+echo 如需打包，请安装 Node.js 20+ 后运行 build.bat。
 pause
 exit /b 0
 

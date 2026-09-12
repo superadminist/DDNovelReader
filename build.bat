@@ -10,25 +10,50 @@ if not exist "%PY%" (
   exit /b 1
 )
 
-rem Resolve Tcl/Tk from the base Python installation behind this virtual environment.
-set "PYBASE="
-set "PYBASE_FILE=%TEMP%\ddnovel_pybase_%RANDOM%_%RANDOM%.tmp"
-"%PY%" -c "import sys; print(sys.base_prefix)" > "%PYBASE_FILE%"
-if errorlevel 1 goto :err
-set /p "PYBASE="<"%PYBASE_FILE%"
-del /q "%PYBASE_FILE%" >nul 2>&1
-set "PYBASE_FILE="
-set "TCL_LIBRARY="
-set "TK_LIBRARY="
-if exist "%PYBASE%\tcl\tcl8.6\init.tcl" (
-  if exist "%PYBASE%\tcl\tk8.6\tk.tcl" (
-    set "TCL_LIBRARY=%PYBASE%\tcl\tcl8.6"
-    set "TK_LIBRARY=%PYBASE%\tcl\tk8.6"
-  )
+where npm.cmd >nul 2>&1
+if errorlevel 1 (
+  echo [错误] 未找到 Node.js/npm。源码打包需要 Node.js 20 或更高版本。
+  pause
+  exit /b 1
+)
+where node.exe >nul 2>&1
+if errorlevel 1 (
+  echo [错误] 未找到 Node.js。源码打包需要 Node.js 20 或更高版本。
+  pause
+  exit /b 1
+)
+node.exe -e "process.exit(Number(process.versions.node.split('.')[0]) >= 20 ? 0 : 1)"
+if errorlevel 1 (
+  echo [错误] 当前 Node.js 版本过旧。源码打包需要 Node.js 20 或更高版本。
+  node.exe --version
+  pause
+  exit /b 1
 )
 
+if not exist "prototype\node_modules\.bin\vite.cmd" (
+  echo 正在安装前端锁定依赖...
+  call npm.cmd --prefix prototype ci
+  if errorlevel 1 goto :err
+)
+
+echo 正在构建离线前端...
+call npm.cmd --prefix prototype run build
+if errorlevel 1 goto :err
+
+echo 正在安装/校验打包工具...
+"%PY%" -m pip install -r build-requirements.txt
+if errorlevel 1 goto :err
+
+for /f "usebackq delims=" %%I in (`"%PY%" -c "import sys; print(sys.base_prefix)"`) do set "PYBASE=%%I"
+if not defined PYBASE goto :err
+rem Freeze from a deterministic DLL search path. Development shells may inject
+rem unrelated Poppler/libheif UCRT shims that make Qt fail after packaging.
+set "PATH="
+set "Path="
+set "Path=%~dp0.venv\Scripts;%PYBASE%;%PYBASE%\Scripts;%SystemRoot%\System32;%SystemRoot%"
+
 echo 正在打包独立 exe（约需 1-3 分钟）...
-"%PY%" -m PyInstaller --clean "多多朗读.spec"
+"%PY%" -m PyInstaller --clean --noconfirm "多多朗读.spec"
 if errorlevel 1 goto :err
 
 echo.
@@ -37,7 +62,6 @@ pause
 exit /b 0
 
 :err
-if defined PYBASE_FILE if exist "%PYBASE_FILE%" del /q "%PYBASE_FILE%" >nul 2>&1
 echo.
 echo [错误] 打包失败，请检查上方日志。
 pause
