@@ -68,6 +68,15 @@ const EMPTY_READER_STATE = {
   bookmarks: { status: "idle", page: null, error: "" },
 };
 
+const EMPTY_FLOATING_STATE = {
+  visible: false,
+  sessionId: "",
+  bookId: "",
+  settings: { geometry: "", topmost: false, opacity: 1, fontSize: 20, followReaderFont: true, background: "light", bilingual: false },
+  playback: { status: "idle", position: { chapterIndex: 0, charOffset: 0, progressPercent: 0 }, sentence: null, requestedBackend: "sapi", activeBackend: null, fallbackActive: false },
+  context: { chapterIndex: 0, chapterTitle: "", previous: null, current: null, next: null },
+};
+
 function readerReducer(state, action) {
   switch (action.type) {
     case "OPENING":
@@ -298,7 +307,7 @@ function DemoReader({ setPage, fontSize, setFontSize, playing, setPlaying, float
   );
 }
 
-function FloatingReader({ playing, setPlaying, onClose, bilingual, setBilingual }) {
+function DemoFloatingReader({ playing, setPlaying, onClose, bilingual, setBilingual }) {
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
   const initialWidth = Math.min(560, window.innerWidth - 96);
@@ -350,6 +359,176 @@ function FloatingReader({ playing, setPlaying, onClose, bilingual, setBilingual 
   );
 }
 
+function FloatingSentence({ tone, sentence, emptyText }) {
+  return <p className={`floating-sentence ${tone}`} data-sentence-role={tone}>{sentence?.text || emptyText}</p>;
+}
+
+function NativeFloatingReader({ state, loading, error, pendingCommand, pendingSetting, onCommand, onSettings, onClose, onMove, onResize }) {
+  const { settings, playback, context } = state;
+  const playing = playback.status === "playing";
+  const progress = Math.max(0, Math.min(100, playback.position.progressPercent));
+  const canControlPlayback = Boolean(state.sessionId) && !pendingCommand;
+  const settingDisabled = Boolean(pendingSetting);
+  const changeFontSize = (delta) => onSettings({ followReaderFont: false, fontSize: Math.max(14, Math.min(40, settings.fontSize + delta)) });
+  const changeOpacity = (delta) => onSettings({ opacity: Math.round(Math.max(0.65, Math.min(1, settings.opacity + delta)) * 100) / 100 });
+  const startMove = (event) => {
+    if (event.button !== 0 || event.target.closest("button, input")) return;
+    event.preventDefault();
+    onMove();
+  };
+
+  return (
+    <main
+      className={`native-floating-surface background-${settings.background}`}
+      data-testid="native-floating-reader"
+      data-window-visible={state.visible ? "true" : "false"}
+      style={{ "--floating-font-size": `${settings.fontSize}px` }}
+    >
+      <WindowResizeHandles controls={{ startWindowResize: onResize }} />
+      <header className="floating-dragbar" onPointerDown={startMove}>
+        <div><span className={`live-dot ${playing ? "playing" : ""}`} /><span className="floating-chapter">{context.chapterTitle || "悬浮朗读"}</span><span className="floating-status">{loading ? "正在同步" : playing ? "正在朗读" : playback.status === "paused" ? "已暂停" : "已就绪"}</span></div>
+        <div className="floating-window-actions">
+          <IconButton label={settings.topmost ? "取消置顶" : "置顶悬浮窗"} active={settings.topmost} onClick={settingDisabled ? undefined : () => onSettings({ topmost: !settings.topmost })}><PushPin weight={settings.topmost ? "fill" : "regular"} /></IconButton>
+          <IconButton label="关闭悬浮窗" onClick={onClose}><X /></IconButton>
+        </div>
+      </header>
+      <section className="floating-content" aria-live="polite">
+        <FloatingSentence tone="previous" sentence={context.previous} emptyText="已经到达本章开头" />
+        <FloatingSentence tone="current" sentence={context.current} emptyText="开始朗读后，这里会显示当前句" />
+        {settings.bilingual ? <p className="floating-bilingual-note">双语偏好已开启；当前内容未提供译文。</p> : null}
+        <FloatingSentence tone="next" sentence={context.next} emptyText="已经到达本章结尾" />
+      </section>
+      {error ? <div className="floating-error" role="alert">{error}</div> : null}
+      <footer className="floating-controls">
+        <div className="control-cluster">
+          <IconButton label="上一句" onClick={canControlPlayback ? () => onCommand("previousSentence") : undefined}><CaretLeft weight="fill" /></IconButton>
+          <button className="floating-play" aria-label={playing ? "暂停" : "播放"} disabled={!canControlPlayback} onClick={() => onCommand(playing ? "pause" : "play")}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
+          <IconButton label="下一句" onClick={canControlPlayback ? () => onCommand("nextSentence") : undefined}><CaretRight weight="fill" /></IconButton>
+        </div>
+        <div className="floating-progress" aria-label={`阅读进度 ${progress.toFixed(1)}%`}><span style={{ width: `${progress}%` }} /></div>
+        <div className="floating-settings">
+          <button className={`language-toggle ${settings.bilingual ? "on" : ""}`} aria-label="显示双语" disabled={settingDisabled} onClick={() => onSettings({ bilingual: !settings.bilingual })}>中 / EN</button>
+          <IconButton label="缩小浮窗文字" onClick={settingDisabled ? undefined : () => changeFontSize(-1)}><Minus /></IconButton>
+          <span className="floating-font-value">{settings.fontSize}</span>
+          <IconButton label="放大浮窗文字" onClick={settingDisabled ? undefined : () => changeFontSize(1)}><Plus /></IconButton>
+        </div>
+        <div className="floating-preferences">
+          <button aria-label="切换浅色背景" className={settings.background === "light" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "light" })}>浅</button>
+          <button aria-label="切换米色背景" className={settings.background === "sepia" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "sepia" })}>米</button>
+          <button aria-label="切换深色背景" className={settings.background === "dark" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "dark" })}>深</button>
+          <IconButton label="降低悬浮窗透明度" onClick={settingDisabled ? undefined : () => changeOpacity(-0.05)}><Minus /></IconButton>
+          <span className="floating-opacity">{Math.round(settings.opacity * 100)}%</span>
+          <IconButton label="提高悬浮窗透明度" onClick={settingDisabled ? undefined : () => changeOpacity(0.05)}><Plus /></IconButton>
+          <button className={`follow-font-toggle ${settings.followReaderFont ? "selected" : ""}`} aria-label="跟随阅读器字号" onClick={settingDisabled ? undefined : () => onSettings({ followReaderFont: !settings.followReaderFont })}>跟随字号</button>
+        </div>
+      </footer>
+    </main>
+  );
+}
+
+function FloatingApplication() {
+  const [floatingState, setFloatingState] = useState(null);
+  const [error, setError] = useState("");
+  const [pendingCommand, setPendingCommand] = useState("");
+  const [pendingSetting, setPendingSetting] = useState(false);
+  const connectionRef = useRef(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.surface = "floating";
+    return () => { delete document.documentElement.dataset.surface; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    connectBridge().then(async (connection) => {
+      if (!active) {
+        connection.dispose();
+        return;
+      }
+      connectionRef.current = connection;
+      connection.onBridgeError((raw) => {
+        if (!active) return;
+        try { setError(JSON.parse(raw).message || "悬浮朗读通信失败。"); } catch { setError("悬浮朗读通信失败。"); }
+      });
+      connection.onFloatingReaderChanged((event) => {
+        if (!active) return;
+        setFloatingState(event.state);
+        setPendingCommand("");
+        setPendingSetting(false);
+        if (event.state.playback.status !== "error") setError("");
+      });
+      try {
+        const response = connection.mode === "demo" ? await connection.floating.show() : await connection.floating.getState();
+        if (active) setFloatingState(response.data);
+      } catch (caught) {
+        if (active) setError(caught.message || "无法读取悬浮朗读状态。");
+      }
+    }).catch((caught) => {
+      if (active) setError(caught.message || "无法连接桌面程序。");
+    });
+    return () => {
+      active = false;
+      connectionRef.current?.dispose();
+      connectionRef.current = null;
+    };
+  }, []);
+
+  const controlPlayback = async (command) => {
+    const connection = connectionRef.current;
+    const sessionId = floatingState?.sessionId;
+    if (!connection || !sessionId) {
+      setError("请先在主窗口打开一本内容。");
+      return;
+    }
+    setPendingCommand(command);
+    try {
+      const response = await connection.reader.controlPlayback({ sessionId, command });
+      if (!response.data.accepted) setPendingCommand("");
+    } catch (caught) {
+      setPendingCommand("");
+      setError(caught.message || "播放控制失败。");
+    }
+  };
+  const updateSettings = async (patch) => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    setPendingSetting(true);
+    try {
+      const response = await connection.floating.updateSettings({ patch });
+      setFloatingState(response.data);
+      setPendingSetting(false);
+    } catch (caught) {
+      setPendingSetting(false);
+      setError(caught.message || "悬浮朗读设置保存失败。");
+    }
+  };
+  const close = async () => {
+    try {
+      await connectionRef.current?.floating.close();
+      setFloatingState((previous) => previous ? { ...previous, visible: false } : previous);
+    } catch (caught) {
+      setError(caught.message || "无法关闭悬浮朗读窗。");
+    }
+  };
+  const state = floatingState || EMPTY_FLOATING_STATE;
+  return (
+    <div className="floating-surface-stage">
+      <NativeFloatingReader
+        state={state}
+        loading={!floatingState}
+        error={error}
+        pendingCommand={pendingCommand}
+        pendingSetting={pendingSetting}
+        onCommand={controlPlayback}
+        onSettings={updateSettings}
+        onClose={close}
+        onMove={() => connectionRef.current?.floating.startWindowMove()}
+        onResize={(edge) => connectionRef.current?.floating.startWindowResize(edge)}
+      />
+    </div>
+  );
+}
+
 function PasteModal({ onClose, onImport, demoMode }) {
   const [title, setTitle] = useState(demoMode ? "运气的成分" : "");
   const [text, setText] = useState(demoMode ? "每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。" : "");
@@ -394,13 +573,13 @@ const ReaderTextBlockView = memo(function ReaderTextBlockView({ block, highlight
   );
 });
 
-function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings }) {
+function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings, floatingAvailable, floatingVisible, onFloatingToggle }) {
   const { settings } = data;
   return (
     <div className="reader-toolbar">
       <div className="toolbar-group"><IconButton label="返回内容库" onClick={onBack}><ArrowLeft /></IconButton><IconButton label="目录" active={panelMode === "toc"} onClick={() => setPanelMode("toc")}><SidebarSimple /></IconButton><span className="toolbar-title">{data.book.title}</span></div>
       <div className="toolbar-group toolbar-center"><IconButton label="缩小字号" onClick={() => onSettings({ fontSize: Math.max(12, settings.fontSize - 1) })}><Minus /></IconButton><span className="font-value">{settings.fontSize}</span><IconButton label="放大字号" onClick={() => onSettings({ fontSize: Math.min(40, settings.fontSize + 1) })}><Plus /></IconButton><button className="speed" onClick={() => onSettings({ paragraphMode: settings.paragraphMode % 3 + 1 })}><TextAa /> 排版 {settings.paragraphMode}</button></div>
-      <div className="toolbar-group"><IconButton label="书内搜索" active={panelMode === "search"} onClick={() => setPanelMode("search")}><MagnifyingGlass /></IconButton><IconButton label="书签" active={panelMode === "bookmarks"} onClick={() => setPanelMode("bookmarks")}><PushPin /></IconButton></div>
+      <div className="toolbar-group"><IconButton label="书内搜索" active={panelMode === "search"} onClick={() => setPanelMode("search")}><MagnifyingGlass /></IconButton><IconButton label="书签" active={panelMode === "bookmarks"} onClick={() => setPanelMode("bookmarks")}><PushPin /></IconButton>{floatingAvailable ? <IconButton label={floatingVisible ? "关闭悬浮朗读" : "打开悬浮朗读"} active={floatingVisible} onClick={onFloatingToggle}><CornersOut /></IconButton> : null}</div>
     </div>
   );
 }
@@ -423,7 +602,7 @@ function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNav
   );
 }
 
-function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings }) {
+function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings, floatingAvailable, floatingVisible, onFloatingToggle }) {
   const [panelMode, setPanelMode] = useState("toc");
   const [query, setQuery] = useState("");
   const scrollTimerRef = useRef(null);
@@ -470,7 +649,7 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
 
   return (
     <section className="reader-page native-reader">
-      <NativeReaderToolbar data={data} panelMode={panelMode} setPanelMode={changePanel} onBack={onBack} onSettings={onSettings} />
+      <NativeReaderToolbar data={data} panelMode={panelMode} setPanelMode={changePanel} onBack={onBack} onSettings={onSettings} floatingAvailable={floatingAvailable} floatingVisible={floatingVisible} onFloatingToggle={onFloatingToggle} />
       <div className="reader-layout">
         <aside className="toc-panel">
           <div className="toc-title"><span>{panelMode === "toc" ? "目录" : panelMode === "search" ? "书内搜索" : "书签"}</span><small>{panelMode === "toc" ? `${data.book.chapters.length} 章` : ""}</small></div>
@@ -512,7 +691,7 @@ function ImportConfirmationModal({ selection, onClose, onStart }) {
   );
 }
 
-export function App() {
+function MainApplication() {
   const qaMode = new URLSearchParams(window.location.search).get("qa");
   const qaFloating = qaMode === "floating";
   const qaEmptyLibrary = qaMode === "empty-library";
@@ -534,6 +713,7 @@ export function App() {
   const [playing, setPlaying] = useState(demoQaFloating);
   const [bilingual, setBilingual] = useState(false);
   const [fontSize, setFontSize] = useState(21);
+  const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [readerState, dispatchReader] = useReducer(readerReducer, EMPTY_READER_STATE);
   const readerOpenRequestRef = useRef("");
   const readerSessionRef = useRef("");
@@ -677,6 +857,14 @@ export function App() {
         } catch (error) {
           if (active) setBridgeError(error.message || "无法加载当前朗读位置。");
         }
+      });
+      connected.onFloatingReaderChanged((event) => {
+        if (active) setNativeFloatingState(event.state);
+      });
+      connected.floating.getState().then((response) => {
+        if (active && connectionRef.current === connected) setNativeFloatingState(response.data);
+      }).catch((error) => {
+        if (active && connected.initialState.data.capabilities.floatingReader) setBridgeError(error.message || "无法读取悬浮朗读状态。");
       });
       setLibraryLoading(false);
     };
@@ -898,6 +1086,21 @@ export function App() {
       setBridgeError(error.message || "阅读设置保存失败。");
     }
   };
+  const toggleFloatingReader = async () => {
+    const connection = connectionRef.current;
+    if (!connection || !capabilities.floatingReader) return;
+    try {
+      if (nativeFloatingState?.visible) {
+        await connection.floating.close();
+        setNativeFloatingState((previous) => previous ? { ...previous, visible: false } : previous);
+      } else {
+        const response = await connection.floating.show();
+        setNativeFloatingState(response.data);
+      }
+    } catch (error) {
+      setBridgeError(error.message || "悬浮朗读窗操作失败。");
+    }
+  };
   const navigatePage = (nextPage) => {
     if (nextPage !== "reader" || bridgeMode === "demo" || readerState.phase === "ready") {
       setPage(nextPage);
@@ -913,6 +1116,11 @@ export function App() {
     ? { fileImport: true, pasteImport: true, webImport: true, audioImport: true }
     : capabilities;
   return (
-    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""}`}>{desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}<div className="mac-window"><MacTitlebar controls={windowControls} desktopMode={desktopMode} /><div className="app-body"><Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} /><main className="content-area">{page === "reader" && bridgeMode === "demo" ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} /> : page === "reader" && bridgeMode === "native" ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} /> : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}</main></div></div>{floating && bridgeMode === "demo" ? <FloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}{pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}{importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}</div>
+    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""}`}>{desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}<div className="mac-window"><MacTitlebar controls={windowControls} desktopMode={desktopMode} /><div className="app-body"><Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} /><main className="content-area">{page === "reader" && bridgeMode === "demo" ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} /> : page === "reader" && bridgeMode === "native" ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} floatingAvailable={capabilities.floatingReader} floatingVisible={Boolean(nativeFloatingState?.visible)} onFloatingToggle={toggleFloatingReader} /> : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}</main></div></div>{floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}{pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}{importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}</div>
   );
+}
+
+export function App() {
+  const surface = new URLSearchParams(window.location.search).get("surface");
+  return surface === "floating" ? <FloatingApplication /> : <MainApplication />;
 }

@@ -28,6 +28,25 @@ function readerFixture() {
   return { sessionId: "reader-session", book: { id: "book-1", title: "真实书籍", author: "作者", format: "TXT", totalChars: 4, chapters: [{ index: 0, title: "第一章", charCount: 4 }] }, position, window, settings, playback, bookmarkCount: 0 };
 }
 
+function floatingFixture(overrides = {}) {
+  const reader = readerFixture();
+  return {
+    visible: true,
+    sessionId: reader.sessionId,
+    bookId: reader.book.id,
+    settings: { geometry: "", topmost: true, opacity: 0.94, fontSize: 20, followReaderFont: true, background: "light", bilingual: false },
+    playback: reader.playback,
+    context: {
+      chapterIndex: 0,
+      chapterTitle: "第一章",
+      previous: null,
+      current: { chapterIndex: 0, startOffset: 0, endOffset: 2, text: "真实" },
+      next: { chapterIndex: 0, startOffset: 2, endOffset: 4, text: "正文" },
+    },
+    ...overrides,
+  };
+}
+
 function nativeEnvironment(response) {
   const calls = [];
   const ok = (data) => JSON.stringify({ schemaVersion: SCHEMA_VERSION, ok: true, data, error: null });
@@ -39,6 +58,7 @@ function nativeEnvironment(response) {
     readerOpened: signal(),
     readerSearchFinished: signal(),
     readerPlaybackChanged: signal(),
+    floatingReaderChanged: signal(),
     getInitialState(callback) { callback(JSON.stringify(response)); },
     selectImportFiles(callback) {
       calls.push(["selectImportFiles"]);
@@ -81,6 +101,12 @@ function nativeEnvironment(response) {
     removeReaderBookmark(input, callback) { calls.push(["removeReaderBookmark", input]); callback(ok({ bookmarkId: "bookmark-1", removed: true })); },
     controlReaderPlayback(input, callback) { calls.push(["controlReaderPlayback", input]); callback(ok({ commandId: "command-1", accepted: true })); },
     updateReaderSettings(input, callback) { calls.push(["updateReaderSettings", input]); callback(ok({ ...readerFixture().settings, ...JSON.parse(input).patch })); },
+    getFloatingReaderState(callback) { calls.push(["getFloatingReaderState"]); callback(ok(floatingFixture())); },
+    showFloatingReader(callback) { calls.push(["showFloatingReader"]); callback(ok(floatingFixture({ visible: true }))); },
+    closeFloatingReader(callback) { calls.push(["closeFloatingReader"]); callback(ok({ closed: true })); },
+    updateFloatingReaderSettings(input, callback) { calls.push(["updateFloatingReaderSettings", input]); const fixture = floatingFixture(); callback(ok({ ...fixture, settings: { ...fixture.settings, ...JSON.parse(input).patch } })); },
+    startFloatingWindowMove() { calls.push(["startFloatingWindowMove"]); },
+    startFloatingWindowResize(edge) { calls.push(["startFloatingWindowResize", edge]); },
     minimizeWindow() { calls.push(["minimizeWindow"]); },
     toggleMaximizeWindow() { calls.push(["toggleMaximizeWindow"]); },
     closeWindow() { calls.push(["closeWindow"]); },
@@ -192,6 +218,64 @@ test("native reader controls use the frozen slots and serialize complex inputs",
     ["controlReaderPlayback", JSON.stringify({ sessionId, command: "play" })],
     ["updateReaderSettings", JSON.stringify({ sessionId, patch: { fontSize: 22, paragraphMode: 2 } })],
   ]);
+});
+
+test("native floating controls use the frozen slots, validate settings and preserve the active session", async () => {
+  const env = nativeEnvironment(createDemoInitialState());
+  const connection = await connectBridge({ window: env.browserWindow, document: null });
+
+  const state = await connection.floating.getState();
+  await connection.floating.show();
+  await connection.floating.updateSettings({ patch: { topmost: false, opacity: 0.8, fontSize: 24, followReaderFont: false, background: "sepia", bilingual: true } });
+  connection.floating.startWindowMove();
+  connection.floating.startWindowResize("bottomRight");
+  const closed = await connection.floating.close();
+
+  assert.equal(state.data.sessionId, "reader-session");
+  assert.equal(state.data.bookId, "book-1");
+  assert.equal(closed.data.closed, true);
+  assert.deepEqual(env.calls, [
+    ["getFloatingReaderState"],
+    ["showFloatingReader"],
+    ["updateFloatingReaderSettings", JSON.stringify({ patch: { topmost: false, opacity: 0.8, fontSize: 24, followReaderFont: false, background: "sepia", bilingual: true } })],
+    ["startFloatingWindowMove"],
+    ["startFloatingWindowResize", "bottomRight"],
+    ["closeFloatingReader"],
+  ]);
+  await assert.rejects(
+    connection.floating.updateSettings({ patch: { opacity: 2 } }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  await assert.rejects(
+    connection.floating.updateSettings({ patch: { opacity: 0.64 } }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  await assert.rejects(
+    connection.floating.updateSettings({ patch: { fontSize: 41 } }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  assert.throws(
+    () => connection.floating.startWindowResize("center"),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+});
+
+test("floating state events are validated and disconnected on dispose", async () => {
+  const env = nativeEnvironment(createDemoInitialState());
+  const connection = await connectBridge({ window: env.browserWindow, document: null });
+  const events = [];
+  const errors = [];
+  connection.onFloatingReaderChanged((event) => events.push(event));
+  connection.onBridgeError((raw) => errors.push(JSON.parse(raw)));
+
+  env.nativeBridge.floatingReaderChanged.emit(JSON.stringify({ schemaVersion: 1, state: floatingFixture() }));
+  env.nativeBridge.floatingReaderChanged.emit(JSON.stringify({ schemaVersion: 1, state: floatingFixture({ settings: { ...floatingFixture().settings, background: "neon" } }) }));
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].state.context.current.text, "真实");
+  assert.equal(errors.at(-1).code, "BRIDGE_INVALID_PAYLOAD");
+  connection.dispose();
+  assert.equal(env.nativeBridge.floatingReaderChanged.size, 0);
 });
 
 test("native reader business errors preserve their backend code before success-data validation", async () => {

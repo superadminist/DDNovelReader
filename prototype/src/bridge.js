@@ -17,6 +17,23 @@ function demoPlayback(position = { chapterIndex: 0, charOffset: 0, progressPerce
   return { status, position, sentence: null, requestedBackend: "sapi", activeBackend: status === "idle" ? null : "sapi", fallbackActive: false };
 }
 
+function demoFloatingState(visible = false, playback = demoPlayback()) {
+  return {
+    visible,
+    sessionId: "demo-reader-session",
+    bookId: "demo-3",
+    settings: { geometry: "", topmost: true, opacity: 0.94, fontSize: 20, followReaderFont: true, background: "light", bilingual: false },
+    playback,
+    context: {
+      chapterIndex: 0,
+      chapterTitle: "第六章　运气的成分",
+      previous: { chapterIndex: 0, startOffset: 0, endOffset: 25, text: "创造财富的法则，往往只是代表了财富创造的方式。" },
+      current: { chapterIndex: 0, startOffset: 26, endOffset: 65, text: "每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。" },
+      next: { chapterIndex: 0, startOffset: 66, endOffset: 76, text: "300万美元算什么？" },
+    },
+  };
+}
+
 function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
   let offset = 0;
   const blocks = DEMO_READER_TEXT.split("\n").map((text, index) => {
@@ -59,6 +76,16 @@ const DUPLICATE_MODES = new Set(["cancel", "overwrite", "reparse"]);
 const PLAYBACK_STATUSES = new Set(["idle", "playing", "paused", "finished", "error"]);
 const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", "nextSentence"]);
 const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "finished", "fallback", "error"]);
+const FLOATING_BACKGROUNDS = new Set(["light", "sepia", "dark"]);
+const WINDOW_RESIZE_EDGES = new Set(["top", "right", "bottom", "left", "topRight", "bottomRight", "bottomLeft", "topLeft"]);
+const FLOATING_SETTING_FIELDS = {
+  topmost: "boolean",
+  opacity: "number",
+  fontSize: "number",
+  followReaderFont: "boolean",
+  background: "string",
+  bilingual: "boolean",
+};
 const READER_SETTING_FIELDS = {
   fontFamily: "string",
   fontSize: "number",
@@ -337,6 +364,44 @@ function validReaderPlayback(playback) {
     && (playback.activeBackend === null || ["sapi", "edge"].includes(playback.activeBackend))
     && typeof playback.fallbackActive === "boolean",
   );
+}
+
+function validFloatingSettings(settings) {
+  return Boolean(
+    settings
+    && typeof settings.geometry === "string"
+    && typeof settings.topmost === "boolean"
+    && nonNegativeNumber(settings.opacity) && settings.opacity >= 0.65 && settings.opacity <= 1
+    && nonNegativeNumber(settings.fontSize) && settings.fontSize >= 14 && settings.fontSize <= 40
+    && typeof settings.followReaderFont === "boolean"
+    && FLOATING_BACKGROUNDS.has(settings.background)
+    && typeof settings.bilingual === "boolean",
+  );
+}
+
+function validFloatingState(data) {
+  return Boolean(
+    data
+    && typeof data.visible === "boolean"
+    && typeof data.sessionId === "string"
+    && typeof data.bookId === "string"
+    && validFloatingSettings(data.settings)
+    && validReaderPlayback(data.playback)
+    && data.context
+    && nonNegativeInteger(data.context.chapterIndex)
+    && typeof data.context.chapterTitle === "string"
+    && validReaderSentence(data.context.previous)
+    && validReaderSentence(data.context.current)
+    && validReaderSentence(data.context.next),
+  );
+}
+
+function validFloatingChangedEvent(event) {
+  return Boolean(event && event.schemaVersion === SCHEMA_VERSION && validFloatingState(event.state));
+}
+
+function validFloatingClose(data) {
+  return Boolean(data && typeof data.closed === "boolean");
 }
 
 function validReaderOpenData(data) {
@@ -624,6 +689,45 @@ function nativeReader(nativeBridge) {
   };
 }
 
+function nativeFloating(nativeBridge) {
+  return {
+    async getState() {
+      return parseBridgeResponse(await invokeWithResult(nativeBridge, "getFloatingReaderState"), validFloatingState);
+    },
+    async show() {
+      return parseBridgeResponse(await invokeWithResult(nativeBridge, "showFloatingReader"), validFloatingState);
+    },
+    async close() {
+      return parseBridgeResponse(await invokeWithResult(nativeBridge, "closeFloatingReader"), validFloatingClose);
+    },
+    async updateSettings(input) {
+      const patch = input?.patch;
+      const validPatch = patch
+        && !Array.isArray(patch)
+        && Object.entries(patch).every(([field, value]) => (
+          FLOATING_SETTING_FIELDS[field] === typeof value
+          && (field !== "opacity" || nonNegativeNumber(value) && value >= 0.65 && value <= 1)
+          && (field !== "fontSize" || nonNegativeNumber(value) && value >= 14 && value <= 40)
+          && (field !== "background" || FLOATING_BACKGROUNDS.has(value))
+        ));
+      if (!validPatch) throw new BridgeProtocolError("悬浮朗读设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "updateFloatingReaderSettings", [JSON.stringify(input)]),
+        validFloatingState,
+      );
+    },
+    startWindowMove() {
+      if (typeof nativeBridge?.startFloatingWindowMove !== "function") throw new BridgeProtocolError("桌面通信接口不完整。", "BRIDGE_METHOD_MISSING");
+      nativeBridge.startFloatingWindowMove();
+    },
+    startWindowResize(edge) {
+      if (!WINDOW_RESIZE_EDGES.has(edge)) throw new BridgeProtocolError("悬浮窗缩放方向无效。", "BRIDGE_INVALID_ARGUMENT");
+      if (typeof nativeBridge?.startFloatingWindowResize !== "function") throw new BridgeProtocolError("桌面通信接口不完整。", "BRIDGE_METHOD_MISSING");
+      nativeBridge.startFloatingWindowResize(edge);
+    },
+  };
+}
+
 function nativeControls(nativeBridge) {
   return {
     minimizeWindow: () => nativeBridge.minimizeWindow(),
@@ -652,6 +756,7 @@ function createNativeConnection(nativeBridge, initialState) {
     controls: nativeControls(nativeBridge),
     imports: nativeImports(nativeBridge),
     reader: nativeReader(nativeBridge),
+    floating: nativeFloating(nativeBridge),
     onBridgeError(callback) {
       bridgeErrorCallbacks.add(callback);
       signalSubscription(nativeBridge.bridgeError, callback, subscriptions);
@@ -705,6 +810,15 @@ function createNativeConnection(nativeBridge, initialState) {
         }
       }, subscriptions);
     },
+    onFloatingReaderChanged(callback) {
+      signalSubscription(nativeBridge.floatingReaderChanged, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validFloatingChangedEvent, "悬浮朗读状态事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
     dispose() {
       subscriptions.splice(0).forEach((disconnect) => disconnect());
     },
@@ -726,6 +840,7 @@ function createDemoConnection() {
   const readerOpenedCallbacks = new Set();
   const readerSearchCallbacks = new Set();
   const readerPlaybackCallbacks = new Set();
+  const floatingChangedCallbacks = new Set();
   const jobs = new Map();
   let jobSequence = 0;
   let readerSequence = 0;
@@ -733,6 +848,7 @@ function createDemoConnection() {
   let demoBookId = "";
   let demoPosition = { chapterIndex: 0, charOffset: 0, progressPercent: 0 };
   let demoPlaybackState = demoPlayback(demoPosition);
+  let demoFloating = demoFloatingState();
 
   const emit = (callbacks, payload) => callbacks.forEach((callback) => callback(payload));
   const response = (data) => ({ schemaVersion: SCHEMA_VERSION, ok: true, data, error: null });
@@ -874,6 +990,7 @@ function createDemoConnection() {
         demoBookId = bookId;
         demoPosition = { chapterIndex: 0, charOffset: 0, progressPercent: 0 };
         demoPlaybackState = demoPlayback(demoPosition);
+        demoFloating = { ...demoFloating, sessionId: demoSessionId, bookId, playback: demoPlaybackState };
         setTimeout(() => emit(readerOpenedCallbacks, {
           schemaVersion: SCHEMA_VERSION,
           requestId,
@@ -922,9 +1039,31 @@ function createDemoConnection() {
         const commandId = `demo-command-${++readerSequence}`;
         demoPlaybackState = demoPlayback(demoPosition, status);
         setTimeout(() => emit(readerPlaybackCallbacks, { schemaVersion: SCHEMA_VERSION, sessionId: input.sessionId, bookId: demoBookId, sequence: readerSequence, commandId, reason: "state", playback: demoPlaybackState, error: null }), 0);
+        demoFloating = { ...demoFloating, sessionId: input.sessionId, bookId: demoBookId, playback: demoPlaybackState };
+        setTimeout(() => emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating }), 0);
         return response({ commandId, accepted: true });
       },
       async updateSettings(input) { return response({ ...demoReaderSettings(), ...input.patch }); },
+    },
+    floating: {
+      async getState() { return response(demoFloating); },
+      async show() {
+        demoFloating = { ...demoFloating, visible: true };
+        emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating });
+        return response(demoFloating);
+      },
+      async close() {
+        demoFloating = { ...demoFloating, visible: false };
+        emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating });
+        return response({ closed: true });
+      },
+      async updateSettings(input) {
+        demoFloating = { ...demoFloating, settings: { ...demoFloating.settings, ...input.patch } };
+        emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating });
+        return response(demoFloating);
+      },
+      startWindowMove() {},
+      startWindowResize() {},
     },
     onBridgeError() {},
     onWindowStateChanged() {},
@@ -933,6 +1072,7 @@ function createDemoConnection() {
     onReaderOpened(callback) { readerOpenedCallbacks.add(callback); },
     onReaderSearchFinished(callback) { readerSearchCallbacks.add(callback); },
     onReaderPlaybackChanged(callback) { readerPlaybackCallbacks.add(callback); },
+    onFloatingReaderChanged(callback) { floatingChangedCallbacks.add(callback); },
     dispose() {
       jobs.forEach((job) => clearTimeout(job.timer));
       jobs.clear();
@@ -941,6 +1081,7 @@ function createDemoConnection() {
       readerOpenedCallbacks.clear();
       readerSearchCallbacks.clear();
       readerPlaybackCallbacks.clear();
+      floatingChangedCallbacks.clear();
     },
   };
 }
