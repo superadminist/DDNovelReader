@@ -27,8 +27,19 @@ export interface BookSummary {
   coverUrl: string;
 }
 
+export type AppTheme = "白天" | "护眼" | "夜间" | "米黄";
+
+export interface AppPreferences {
+  theme: AppTheme;
+  colorScheme: "light" | "dark";
+  autoOpenLast: boolean;
+  startupBookId: string;
+}
+
 export interface InitialStateData {
+  app: { version: string };
   library: { books: BookSummary[]; total: number };
+  preferences: AppPreferences;
   window: { isMaximized: boolean };
   capabilities: {
     fileImport: boolean;
@@ -417,9 +428,16 @@ export interface FloatingReaderControls {
   startWindowResize(edge: "top" | "right" | "bottom" | "left" | "topRight" | "bottomRight" | "bottomLeft" | "topLeft"): void;
 }
 
+export interface AppControls {
+  updatePreferences(input: {
+    patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast">>;
+  }): Promise<BridgeResponse<AppPreferences>>;
+}
+
 export interface WindowControls {
   minimizeWindow(): void;
   toggleMaximizeWindow(): void;
+  toggleFullscreen(): void;
   closeWindow(): void;
   startWindowMove(): void;
   startWindowResize(edge: "top" | "right" | "bottom" | "left" | "topRight" | "bottomRight" | "bottomLeft" | "topLeft"): void;
@@ -429,11 +447,13 @@ export interface BridgeConnection {
   mode: "demo" | "native";
   initialState: InitialStateResponse;
   controls: WindowControls;
+  app: AppControls;
   imports: ImportControls;
   reader: ReaderControls;
   floating: FloatingReaderControls;
   onBridgeError(callback: (payload: string) => void): void;
   onWindowStateChanged(callback: (payload: string) => void): void;
+  onAppPreferencesChanged(callback: (preferences: AppPreferences) => void): void;
   onImportProgress(callback: (event: ImportProgressEvent) => void): void;
   onImportFinished(callback: (event: ImportFinishedEvent) => void): void;
   onReaderOpened(callback: (event: ReaderOpenedEvent) => void): void;
