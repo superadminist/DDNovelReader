@@ -11,7 +11,7 @@ if (!port || !bookTitle || !searchTerm || !screenshotPath) {
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-async function waitForTarget(timeoutMs = 15_000) {
+async function waitForTarget(timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTargets = [];
   while (Date.now() < deadline) {
@@ -89,7 +89,7 @@ function quote(value) {
 
 async function main() {
   let cdp;
-  const connectDeadline = Date.now() + 15_000;
+  const connectDeadline = Date.now() + 60_000;
   while (!cdp && Date.now() < connectDeadline) {
     const target = await waitForTarget();
     const candidate = new CdpClient(target.webSocketDebuggerUrl);

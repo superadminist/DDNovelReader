@@ -10,8 +10,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
         from .qt_host import DesktopWindow, frontend_index_path
-    except ImportError:
-        print("[错误] 缺少 PySide6/QtWebEngine，请先安装 requirements.txt 中的依赖。", file=sys.stderr)
+    except ImportError as exc:
+        print(
+            "[错误] 缺少 PySide6/QtWebEngine，"
+            f"请先安装 requirements.txt 中的依赖：{exc}",
+            file=sys.stderr,
+        )
         return 2
 
     app = QApplication(argv if argv is not None else sys.argv)

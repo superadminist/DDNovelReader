@@ -30,6 +30,11 @@ from .reader_service import ReaderService
 from .tts_engine import SpeechController
 
 
+def _qa_trace(message: str) -> None:
+    if os.environ.get("DD_QA_TRACE"):
+        print(f"[DD_QA_TRACE] {message}", flush=True)
+
+
 class OfflineRequestInterceptor(QWebEngineUrlRequestInterceptor):
     """Prevent the packaged UI from depending on remote resources."""
 
@@ -236,6 +241,7 @@ class FloatingReaderWindow(QMainWindow):
 class DesktopWindow(QMainWindow):
     def __init__(self, library: LibraryQueryService | None = None):
         super().__init__()
+        _qa_trace("desktop-window:start")
         self.setWindowTitle("多多朗读")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
         self.setMinimumSize(960, 620)
@@ -248,12 +254,14 @@ class DesktopWindow(QMainWindow):
         # Create the view first so its page is destroyed before the custom
         # profile owned by this window.
         self._view = QWebEngineView(self)
+        _qa_trace("desktop-window:view-created")
         self._profile = QWebEngineProfile(self)
         self._fullscreen_restore_maximized = False
         self._interceptor = OfflineRequestInterceptor(self._profile)
         self._profile.setUrlRequestInterceptor(self._interceptor)
 
         self._page = QWebEnginePage(self._profile, self._view)
+        _qa_trace("desktop-window:page-created")
         self._view.setPage(self._page)
         self._page.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
@@ -263,6 +271,7 @@ class DesktopWindow(QMainWindow):
         self._inject_qwebchannel_script()
         library = library or LibraryQueryService()
         self._speech = SpeechController()
+        _qa_trace("desktop-window:speech-created")
         self._playback = PlaybackService(self._speech)
         self._reader = ReaderService(library.path)
         self.bridge = DesktopBridge(
@@ -272,17 +281,22 @@ class DesktopWindow(QMainWindow):
             playback=self._playback,
             file_picker=self._select_import_files,
         )
+        _qa_trace("desktop-window:bridge-created")
         self._floating_window: FloatingReaderWindow | None = None
         self._channel = QWebChannel(self._page)
         self._channel.registerObject("ddBridge", self.bridge)
         self._page.setWebChannel(self._channel)
+        _qa_trace("desktop-window:channel-ready")
 
         self.setCentralWidget(self._view)
         self._load_error_shown = False
         self._view.loadFinished.connect(self._handle_load_finished)
-        self._view.setUrl(QUrl.fromLocalFile(os.fspath(frontend_index_path())))
+        index_path = frontend_index_path()
+        _qa_trace(f"desktop-window:load:{index_path}:{index_path.is_file()}")
+        self._view.setUrl(QUrl.fromLocalFile(os.fspath(index_path)))
 
     def _handle_load_finished(self, succeeded: bool) -> None:
+        _qa_trace(f"desktop-window:load-finished:{succeeded}:{self._view.url().toString()}")
         if succeeded or self._load_error_shown:
             return
         self._load_error_shown = True

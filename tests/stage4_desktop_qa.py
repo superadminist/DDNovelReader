@@ -191,7 +191,7 @@ def _run_phase(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--node", required=True, help="Node 22+ executable")
+    parser.add_argument("--node", required=True, help="Node 20+ executable")
     parser.add_argument("--screenshot-dir", required=True, help="output directory outside the repository")
     parser.add_argument(
         "--dpi",
