@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import book_loader
+from .library_lock import library_write_lock
 from .library_service import default_library_path
 from .storage import Storage
 
@@ -123,9 +124,9 @@ class LibraryImportService:
         if duplicate_mode == "cancel" and any(candidate.duplicate_exists for candidate in candidates):
             return self._empty_result(candidates, "cancelled")
 
-        self._validate_library_for_write()
-        self.library_path.parent.mkdir(parents=True, exist_ok=True)
-        storage = Storage(os.fspath(self.library_path))
+        with library_write_lock(self.library_path):
+            self._validate_library_for_write()
+            self.library_path.parent.mkdir(parents=True, exist_ok=True)
         total = len(candidates)
         completed = succeeded = failed = 0
         results = []
@@ -142,6 +143,9 @@ class LibraryImportService:
             ))
             try:
                 self._validate_candidate(candidate)
+                with library_write_lock(self.library_path):
+                    self._validate_library_for_write()
+                    storage = Storage(os.fspath(self.library_path))
                 force_reparse = duplicate_mode == "reparse" and bool(storage.get_book(candidate.book_id))
                 content = self._load_content(
                     storage,
@@ -344,8 +348,8 @@ class LibraryImportService:
             ) from parse_error
         raise ImportServiceError("FILE_NOT_FOUND", "所选文件不存在或无法访问。")
 
-    @staticmethod
     def _save_import(
+        self,
         storage: Storage,
         content: book_loader.BookContent,
         path: str,
@@ -369,15 +373,18 @@ class LibraryImportService:
                 metadata["source_bak"] = backup_path
         except Exception:
             pass
-        try:
-            storage.add_book(metadata)
-        except Exception as exc:
-            raise ImportServiceError(
-                "LIBRARY_WRITE_FAILED",
-                "无法更新书架数据，请检查数据目录是否可写。",
-                retryable=True,
-            ) from exc
-        storage.write_cache(book_id, content)
+        with library_write_lock(self.library_path):
+            self._validate_library_for_write()
+            current_storage = Storage(os.fspath(self.library_path))
+            try:
+                current_storage.add_book(metadata)
+            except Exception as exc:
+                raise ImportServiceError(
+                    "LIBRARY_WRITE_FAILED",
+                    "无法更新书架数据，请检查数据目录是否可写。",
+                    retryable=True,
+                ) from exc
+        current_storage.write_cache(book_id, content)
         return book_id
 
     @staticmethod
