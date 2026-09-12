@@ -258,15 +258,15 @@ class Stage2AcceptanceTests(unittest.TestCase):
         self.assertNotIn(os.fspath(library_path), raw)
         self.assertEqual(_fingerprint(library_path), before)
 
-    def test_stage2_capabilities_enable_imports_but_not_reader(self):
+    def test_current_capabilities_enable_imports_reader_and_tts(self):
         payload = json.loads(self.bridge.getInitialState())
         capabilities = payload["data"]["capabilities"]
         self.assertTrue(capabilities["fileImport"])
         self.assertTrue(capabilities["pasteImport"])
         self.assertFalse(capabilities["webImport"])
         self.assertFalse(capabilities["audioImport"])
-        self.assertFalse(capabilities["reader"])
-        self.assertFalse(capabilities["tts"])
+        self.assertTrue(capabilities["reader"])
+        self.assertTrue(capabilities["tts"])
         self.assertFalse(capabilities["floatingReader"])
 
     def test_file_selection_cancel_is_a_zero_write_success(self):
@@ -327,7 +327,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
             self._assert_progress_event(json.loads(progress.at(index)[0]))
         self.assertEqual(LibraryQueryService().load_library()["total"], 1)
         self.assertEqual(_fingerprint(source), source_before)
-        self.assertFalse(json.loads(self.bridge.getInitialState())["data"]["capabilities"]["reader"])
+        self.assertTrue(json.loads(self.bridge.getInitialState())["data"]["capabilities"]["reader"])
 
     def test_paste_import_uses_real_text_unique_ids_and_no_reader_payload(self):
         first_finished = self._finished_spy()
@@ -366,7 +366,7 @@ class Stage2AcceptanceTests(unittest.TestCase):
             == "首行标题\n\n首行标题\n真实正文内容。"
             for path in pasted_sources
         ))
-        self.assertFalse(json.loads(self.bridge.getInitialState())["data"]["capabilities"]["reader"])
+        self.assertTrue(json.loads(self.bridge.getInitialState())["data"]["capabilities"]["reader"])
 
     def test_invalid_requests_fail_closed_without_files_or_events(self):
         before = _tree_manifest(self.data_root)

@@ -23,7 +23,10 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
 from .book_loader import SUPPORTED_EXTS
 from .library_service import LibraryQueryService
+from .playback_service import PlaybackService
 from .qt_bridge import DesktopBridge
+from .reader_service import ReaderService
+from .tts_engine import SpeechController
 
 
 class OfflineRequestInterceptor(QWebEngineUrlRequestInterceptor):
@@ -79,7 +82,17 @@ class DesktopWindow(QMainWindow):
         )
 
         self._inject_qwebchannel_script()
-        self.bridge = DesktopBridge(self, library, file_picker=self._select_import_files)
+        library = library or LibraryQueryService()
+        self._speech = SpeechController()
+        self._playback = PlaybackService(self._speech)
+        self._reader = ReaderService(library.path)
+        self.bridge = DesktopBridge(
+            self,
+            library,
+            reader=self._reader,
+            playback=self._playback,
+            file_picker=self._select_import_files,
+        )
         self._channel = QWebChannel(self._page)
         self._channel.registerObject("ddBridge", self.bridge)
         self._page.setWebChannel(self._channel)
@@ -133,7 +146,7 @@ class DesktopWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if hasattr(self, "bridge"):
-            self.bridge.shutdownImports()
+            self.bridge.shutdown()
         super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:

@@ -95,7 +95,7 @@ class DesktopBridgeTests(unittest.TestCase):
             file_picker=lambda: [os.fspath(self.source)],
         )
 
-    def test_initial_state_uses_schema_v1_and_stage_two_capabilities(self):
+    def test_initial_state_uses_schema_v1_and_current_capabilities(self):
         payload = json.loads(self.bridge.getInitialState())
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
@@ -103,8 +103,8 @@ class DesktopBridgeTests(unittest.TestCase):
         capabilities = payload["data"]["capabilities"]
         self.assertTrue(capabilities["fileImport"])
         self.assertTrue(capabilities["pasteImport"])
-        self.assertFalse(capabilities["reader"])
-        self.assertFalse(capabilities["tts"])
+        self.assertTrue(capabilities["reader"])
+        self.assertTrue(capabilities["tts"])
 
     def test_frozen_native_import_slots_and_signals_are_qt_visible(self):
         meta_object = self.bridge.metaObject()

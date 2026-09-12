@@ -90,13 +90,15 @@ class PlaybackService:
             self._sentence = None
             return self._position()
 
-    def control(self, command, command_id=None):
+    def control(self, command, command_id=None, session_id=None):
         """接受冻结契约中的五种 ReaderPlaybackCommand。"""
         if command not in PLAYBACK_COMMANDS:
             raise ValueError("unsupported playback command")
         command_id = str(command_id or uuid.uuid4().hex)
         with self._lock:
             self._ensure_bound()
+            if session_id is not None and str(session_id) != self._session_id:
+                raise RuntimeError("reader session is not bound")
             self._command_id = command_id
             if command == "play":
                 accepted = self._play()

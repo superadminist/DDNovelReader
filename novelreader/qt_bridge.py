@@ -15,6 +15,9 @@ from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 
 from .import_service import ImportCandidate, ImportServiceError, LibraryImportService
 from .library_service import LibraryDataError, LibraryQueryService
+from .playback_service import PlaybackService
+from .reader_service import ReaderService, ReaderServiceError
+from .tts_engine import SpeechController
 
 
 SCHEMA_VERSION = 1
@@ -24,8 +27,8 @@ CAPABILITIES = {
     "pasteImport": True,
     "webImport": False,
     "audioImport": False,
-    "reader": False,
-    "tts": False,
+    "reader": True,
+    "tts": True,
     "floatingReader": False,
 }
 
@@ -57,6 +60,23 @@ def _safe_import_error(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _safe_reader_error(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ReaderServiceError):
+        return exc.as_dict()
+    if isinstance(exc, (RuntimeError, ValueError)):
+        return {
+            "code": "INVALID_REQUEST",
+            "message": "阅读请求无法执行，请重新打开书籍后重试。",
+            "retryable": False,
+        }
+    LOGGER.exception("Unexpected error in reader request", exc_info=exc)
+    return {
+        "code": "READER_FAILED",
+        "message": "阅读功能暂时不可用，请稍后重试。",
+        "retryable": True,
+    }
+
+
 class DesktopBridge(QObject):
     """The only native object exposed to the production frontend."""
 
@@ -64,12 +84,17 @@ class DesktopBridge(QObject):
     bridgeError = Signal(str)
     importProgress = Signal(str)
     importFinished = Signal(str)
+    readerOpened = Signal(str)
+    readerSearchFinished = Signal(str)
+    readerPlaybackChanged = Signal(str)
 
     def __init__(
         self,
         window: Any,
         library: LibraryQueryService | None = None,
         importer: LibraryImportService | None = None,
+        reader: ReaderService | None = None,
+        playback: PlaybackService | None = None,
         file_picker: Callable[[], list[str]] | None = None,
     ):
         super().__init__(window)
@@ -77,6 +102,8 @@ class DesktopBridge(QObject):
         self._library = library or LibraryQueryService()
         library_path = getattr(self._library, "path", None)
         self._importer = importer or LibraryImportService(library_path)
+        self._reader = reader or ReaderService(library_path)
+        self._playback = playback or PlaybackService(SpeechController())
         self._file_picker = file_picker or (lambda: [])
         self._selections: dict[str, tuple[ImportCandidate, ...]] = {}
         self._active_job_id = ""
@@ -87,6 +114,16 @@ class DesktopBridge(QObject):
         self._import_timer.setInterval(25)
         self._import_timer.timeout.connect(self._drain_import_events)
         self._import_timer.start()
+        self._reader_events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
+        self._reader_open_request_id = ""
+        self._search_thread: threading.Thread | None = None
+        self._search_cancel: threading.Event | None = None
+        self._search_request_id = ""
+        self._reader_timer = QTimer(self)
+        self._reader_timer.setInterval(25)
+        self._reader_timer.timeout.connect(self._drain_reader_events)
+        self._reader_timer.start()
 
     def _state_data(self, library: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
@@ -244,6 +281,238 @@ class DesktopBridge(QObject):
         data["cancelRequested"] = True
         return self._ok_response(data)
 
+    @Slot(str, result=str)
+    def openReaderBook(self, book_id: str) -> str:
+        safe_book_id = str(book_id or "")
+        empty = {"requestId": "", "bookId": safe_book_id, "state": "loading"}
+        if not safe_book_id:
+            return self._error_response(empty, "INVALID_REQUEST", "书籍编号不能为空。")
+        if self._reader_open_request_id:
+            return self._error_response(empty, "READER_BUSY", "正在打开另一本书，请稍候。")
+
+        request_id = uuid.uuid4().hex
+        self._reader_open_request_id = request_id
+        events = self._reader_events
+        reader = self._reader
+        playback = self._playback
+
+        def worker() -> None:
+            try:
+                data = reader.open_book(safe_book_id)
+                content = reader.get_session_content(data["sessionId"])
+                settings = data["settings"]
+                self._apply_speech_settings(settings)
+                data["playback"] = playback.bind_session(
+                    data["sessionId"],
+                    safe_book_id,
+                    content,
+                    data["position"]["chapterIndex"],
+                    data["position"]["charOffset"],
+                )
+                event = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "requestId": request_id,
+                    "bookId": safe_book_id,
+                    "ok": True,
+                    "data": data,
+                    "error": None,
+                }
+            except Exception as exc:
+                event = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "requestId": request_id,
+                    "bookId": safe_book_id,
+                    "ok": False,
+                    "data": None,
+                    "error": _safe_reader_error(exc),
+                }
+            events.put(("opened", event))
+
+        self._reader_thread = threading.Thread(
+            target=worker,
+            name=f"dd-reader-{request_id[:8]}",
+            daemon=False,
+        )
+        self._reader_thread.start()
+        return self._ok_response({
+            "requestId": request_id,
+            "bookId": safe_book_id,
+            "state": "loading",
+        })
+
+    @Slot(str, result=str)
+    def getReaderWindow(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = self._empty_reader_window()
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "阅读窗口请求格式不正确。")
+        try:
+            data = self._reader.get_window(
+                request.get("sessionId"),
+                request.get("chapterIndex"),
+                request.get("anchorOffset"),
+            )
+            return self._ok_response(data)
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def navigateReader(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = {
+            "position": self._empty_position(),
+            "window": self._empty_reader_window(),
+            "playback": self._playback.snapshot(),
+        }
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "阅读导航请求格式不正确。")
+        try:
+            data = self._reader.navigate(request.get("sessionId"), request.get("target"))
+            position = data["position"]
+            self._playback.set_position(position["chapterIndex"], position["charOffset"])
+            data["playback"] = self._playback.snapshot()
+            return self._ok_response(data)
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def updateReaderPosition(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = {"updated": False, "position": self._empty_position()}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "阅读进度请求格式不正确。")
+        try:
+            data = self._reader.update_position(
+                request.get("sessionId"),
+                request.get("chapterIndex"),
+                request.get("charOffset"),
+            )
+            return self._ok_response(data)
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def searchReader(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = {"requestId": "", "state": "searching"}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "搜索请求格式不正确。")
+        session_id = request.get("sessionId")
+        query = request.get("query")
+        cursor = request.get("cursor", "")
+        if not isinstance(session_id, str) or not isinstance(query, str) or not isinstance(cursor, str):
+            return self._error_response(empty, "INVALID_REQUEST", "搜索请求参数不完整。")
+
+        if self._search_cancel is not None:
+            self._search_cancel.set()
+        cancel = threading.Event()
+        self._search_cancel = cancel
+        request_id = uuid.uuid4().hex
+        self._search_request_id = request_id
+        events = self._reader_events
+        reader = self._reader
+
+        def worker() -> None:
+            try:
+                data = reader.search(session_id, query, cursor, cancel)
+                event = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "requestId": request_id,
+                    "sessionId": session_id,
+                    "ok": True,
+                    "data": data,
+                    "error": None,
+                }
+            except Exception as exc:
+                event = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "requestId": request_id,
+                    "sessionId": session_id,
+                    "ok": False,
+                    "data": None,
+                    "error": _safe_reader_error(exc),
+                }
+            events.put(("search", event))
+
+        self._search_thread = threading.Thread(
+            target=worker,
+            name=f"dd-search-{request_id[:8]}",
+            daemon=False,
+        )
+        self._search_thread.start()
+        return self._ok_response({"requestId": request_id, "state": "searching"})
+
+    @Slot(str, result=str)
+    def listReaderBookmarks(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = {"total": 0, "nextCursor": "", "items": []}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "书签请求格式不正确。")
+        try:
+            return self._ok_response(self._reader.list_bookmarks(
+                request.get("sessionId"), request.get("cursor", "")
+            ))
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def addReaderBookmark(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = self._empty_bookmark()
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "书签请求格式不正确。")
+        try:
+            return self._ok_response(self._reader.add_bookmark(
+                request.get("sessionId"),
+                request.get("chapterIndex"),
+                request.get("startOffset"),
+                request.get("endOffset"),
+                request.get("note", ""),
+            ))
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def removeReaderBookmark(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        bookmark_id = request.get("bookmarkId", "") if request else ""
+        empty = {"bookmarkId": str(bookmark_id or ""), "removed": False}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "删除书签请求格式不正确。")
+        try:
+            return self._ok_response(self._reader.remove_bookmark(
+                request.get("sessionId"), bookmark_id
+            ))
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def controlReaderPlayback(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty = {"commandId": "", "accepted": False}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "播放请求格式不正确。")
+        try:
+            session_id = request.get("sessionId")
+            return self._ok_response(self._playback.control(
+                request.get("command"), session_id=session_id
+            ))
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def updateReaderSettings(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        empty: dict[str, Any] = {}
+        if request is None:
+            return self._error_response(empty, "INVALID_REQUEST", "阅读设置请求格式不正确。")
+        try:
+            data = self._reader.update_settings(request.get("sessionId"), request.get("patch"))
+            self._apply_speech_settings(data)
+            return self._ok_response(data)
+        except Exception as exc:
+            return self._reader_error_response(empty, exc)
+
     @Slot()
     def minimizeWindow(self) -> None:
         self._window.showMinimized()
@@ -257,7 +526,7 @@ class DesktopBridge(QObject):
 
     @Slot()
     def closeWindow(self) -> None:
-        self.shutdownImports()
+        self.shutdown()
         self._window.close()
 
     @Slot()
@@ -286,6 +555,17 @@ class DesktopBridge(QObject):
         if self._import_cancel is not None:
             self._import_cancel.set()
         self._selections.clear()
+
+    def shutdown(self) -> None:
+        self.shutdownImports()
+        if self._search_cancel is not None:
+            self._search_cancel.set()
+        self._reader_timer.stop()
+        self._import_timer.stop()
+        for thread in (self._import_thread, self._reader_thread, self._search_thread):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
+        self._playback.shutdown(2.0)
 
     def _start_import_job(
         self,
@@ -350,6 +630,31 @@ class DesktopBridge(QObject):
                 self._import_thread = None
             self.importFinished.emit(_json(event))
 
+    def _drain_reader_events(self) -> None:
+        while True:
+            try:
+                event_type, payload = self._reader_events.get_nowait()
+            except queue.Empty:
+                break
+            if event_type == "opened":
+                if payload.get("requestId") == self._reader_open_request_id:
+                    self._reader_open_request_id = ""
+                    self._reader_thread = None
+                self.readerOpened.emit(_json(payload))
+            elif event_type == "search":
+                if payload.get("requestId") == self._search_request_id:
+                    self._search_thread = None
+                    self._search_cancel = None
+                    self._search_request_id = ""
+                self.readerSearchFinished.emit(_json(payload))
+
+        try:
+            events = self._playback.drain_events()
+        except RuntimeError:
+            return
+        for event in events:
+            self.readerPlaybackChanged.emit(_json(event))
+
     @staticmethod
     def _request_object(request_json: str) -> dict[str, Any] | None:
         try:
@@ -367,6 +672,39 @@ class DesktopBridge(QObject):
             "duplicateCount": 0,
             "largeFileCount": 0,
             "items": [],
+        }
+
+    @staticmethod
+    def _empty_position() -> dict[str, Any]:
+        return {"chapterIndex": 0, "charOffset": 0, "progressPercent": 0.0}
+
+    @staticmethod
+    def _empty_reader_window() -> dict[str, Any]:
+        return {
+            "sessionId": "",
+            "bookId": "",
+            "chapterIndex": 0,
+            "chapterTitle": "",
+            "chapterCharCount": 0,
+            "anchorOffset": 0,
+            "windowStartOffset": 0,
+            "windowEndOffset": 0,
+            "hasBefore": False,
+            "hasAfter": False,
+            "blocks": [],
+        }
+
+    @staticmethod
+    def _empty_bookmark() -> dict[str, Any]:
+        return {
+            "id": "",
+            "chapterIndex": 0,
+            "chapterTitle": "",
+            "startOffset": 0,
+            "endOffset": 0,
+            "text": "",
+            "note": "",
+            "createdAt": 0.0,
         }
 
     @staticmethod
@@ -395,6 +733,25 @@ class DesktopBridge(QObject):
     @classmethod
     def _service_error_response(cls, data: dict[str, Any], exc: ImportServiceError) -> str:
         return cls._error_response(data, exc.code, exc.user_message, exc.retryable)
+
+    @classmethod
+    def _reader_error_response(cls, data: dict[str, Any], exc: Exception) -> str:
+        error = _safe_reader_error(exc)
+        return cls._error_response(
+            data,
+            error["code"],
+            error["message"],
+            error["retryable"],
+        )
+
+    def _apply_speech_settings(self, settings: dict[str, Any]) -> None:
+        speech = self._playback.speech_controller
+        voice_id = settings.get("ttsVoiceId")
+        if voice_id:
+            speech.set_voice(voice_id)
+        speech.set_rate(settings.get("ttsRate", 200))
+        speech.set_sentence_gap(settings.get("sentenceGapSeconds", 0.1))
+        speech.set_volume(settings.get("volume", 100))
 
     def _emit_error(self, code: str, message: str) -> None:
         self.bridgeError.emit(_json({
