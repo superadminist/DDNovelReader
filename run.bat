@@ -10,11 +10,8 @@ if not exist "%PY%" (
   exit /b 1
 )
 
-rem novelreader\main.py discovers Tcl/Tk from the base Python installation.
-rem A standard Windows venv does not copy the Tcl/Tk script libraries.
-
 echo 正在启动多多朗读...
-"%PY%" "%~dp0novelreader\main.py"
+"%PY%" -m novelreader.qt_main
 if errorlevel 1 (
   echo.
   echo [错误] 程序异常退出，请查看上方提示。
