@@ -344,6 +344,8 @@ export interface FloatingReaderContext {
 }
 
 export interface FloatingReaderState {
+  sessionId: string;
+  bookId: string;
   visible: boolean;
   settings: FloatingReaderSettings;
   playback: ReaderPlaybackSnapshot;
