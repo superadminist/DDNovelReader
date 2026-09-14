@@ -65,6 +65,7 @@ function nativeEnvironment(response) {
     windowStateChanged: signal(),
     appPreferencesChanged: signal(),
     speechPreferencesChanged: signal(),
+    softwareUpdateChanged: signal(),
     importProgress: signal(),
     importFinished: signal(),
     readerOpened: signal(),
@@ -120,6 +121,11 @@ function nativeEnvironment(response) {
     updateFloatingReaderSettings(input, callback) { calls.push(["updateFloatingReaderSettings", input]); const fixture = floatingFixture(); callback(ok({ ...fixture, settings: { ...fixture.settings, ...JSON.parse(input).patch } })); },
     updateAppPreferences(input, callback) { calls.push(["updateAppPreferences", input]); const patch = JSON.parse(input).patch; const preferences = { ...response.data.preferences, ...patch }; preferences.colorScheme = preferences.theme === "夜间" ? "dark" : "light"; callback(ok(preferences)); },
     updateSpeechPreferences(input, callback) { calls.push(["updateSpeechPreferences", input]); const patch = JSON.parse(input).patch; callback(ok({ ...response.data.speech, settings: { ...response.data.speech.settings, ...patch } })); },
+    checkSoftwareUpdate(input, callback) { calls.push(["checkSoftwareUpdate", input]); callback(ok({ ...response.data.softwareUpdate, status: "checking", message: "正在检查更新…" })); },
+    downloadSoftwareUpdate(input, callback) { calls.push(["downloadSoftwareUpdate", input]); callback(ok({ ...response.data.softwareUpdate, status: "downloading", latestVersion: "2.0.2", message: "正在下载…" })); },
+    skipSoftwareUpdate(input, callback) { calls.push(["skipSoftwareUpdate", input]); callback(ok({ ...response.data.softwareUpdate, status: "skipped", latestVersion: "2.0.2", message: "已跳过。" })); },
+    installSoftwareUpdate(callback) { calls.push(["installSoftwareUpdate"]); callback(ok({ ...response.data.softwareUpdate, status: "installing", latestVersion: "2.0.2", message: "正在安装。" })); },
+    openSoftwareUpdatePage(target, callback) { calls.push(["openSoftwareUpdatePage", target]); callback(ok(response.data.softwareUpdate)); },
     startFloatingWindowMove() { calls.push(["startFloatingWindowMove"]); },
     startFloatingWindowResize(edge) { calls.push(["startFloatingWindowResize", edge]); },
     minimizeWindow() { calls.push(["minimizeWindow"]); },
@@ -192,9 +198,9 @@ test("native application preferences preserve legacy themes and validate events"
   connection.onAppPreferencesChanged((preferences) => events.push(preferences));
   connection.onBridgeError((raw) => errors.push(JSON.parse(raw)));
 
-  const updated = await connection.app.updatePreferences({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true } });
+  const updated = await connection.app.updatePreferences({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true, autoCheckUpdates: false } });
   assert.equal(updated.data.colorScheme, "dark");
-  assert.deepEqual(env.calls, [["updateAppPreferences", JSON.stringify({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true } })]]);
+  assert.deepEqual(env.calls, [["updateAppPreferences", JSON.stringify({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true, autoCheckUpdates: false } })]]);
   env.nativeBridge.appPreferencesChanged.emit(JSON.stringify(updated.data));
   env.nativeBridge.appPreferencesChanged.emit(JSON.stringify({ ...updated.data, colorScheme: "light" }));
   assert.equal(events.length, 1);
@@ -209,6 +215,41 @@ test("native application preferences preserve legacy themes and validate events"
   );
   connection.dispose();
   assert.equal(env.nativeBridge.appPreferencesChanged.size, 0);
+});
+
+test("native software updater validates commands and update events", async () => {
+  const env = nativeEnvironment(createDemoInitialState());
+  const connection = await connectBridge({ window: env.browserWindow, document: null });
+  const events = [];
+  const errors = [];
+  connection.onSoftwareUpdateChanged((state) => events.push(state));
+  connection.onBridgeError((raw) => errors.push(JSON.parse(raw)));
+
+  await connection.updates.check({ manual: true });
+  await connection.updates.download("2.0.2");
+  await connection.updates.skip("2.0.2");
+  await connection.updates.install();
+  await connection.updates.openPage("project");
+  assert.deepEqual(env.calls, [
+    ["checkSoftwareUpdate", JSON.stringify({ manual: true })],
+    ["downloadSoftwareUpdate", JSON.stringify({ version: "2.0.2" })],
+    ["skipSoftwareUpdate", JSON.stringify({ version: "2.0.2" })],
+    ["installSoftwareUpdate"],
+    ["openSoftwareUpdatePage", "project"],
+  ]);
+
+  const available = { ...createDemoInitialState().data.softwareUpdate, status: "available", latestVersion: "2.0.2", message: "发现新版本。", canDownload: true };
+  env.nativeBridge.softwareUpdateChanged.emit(JSON.stringify(available));
+  env.nativeBridge.softwareUpdateChanged.emit(JSON.stringify({ ...available, progressPercent: 101 }));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].latestVersion, "2.0.2");
+  assert.equal(errors.at(-1).code, "BRIDGE_INVALID_PAYLOAD");
+  await assert.rejects(
+    connection.updates.check({ manual: "yes" }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  connection.dispose();
+  assert.equal(env.nativeBridge.softwareUpdateChanged.size, 0);
 });
 
 test("native speech preferences keep the full voice catalog and validate events", async () => {
@@ -591,6 +632,9 @@ test("settings modal avoids the Qt WebEngine full-window backdrop filter flicker
   assert.doesNotMatch(modalBackdrop, /backdrop-filter/);
   assert.match(app, /preferences\.closeToTray/);
   assert.match(app, /点击关闭按钮时最小化到系统托盘/);
+  assert.match(app, /preferences\.autoCheckUpdates/);
+  assert.match(app, /启动时自动检查正式版更新/);
+  assert.match(app, /SHA256/);
 });
 
 test("native window surfaces keep anti-aliased corner pixels inside the viewport", async () => {

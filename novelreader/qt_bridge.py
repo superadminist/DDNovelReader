@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
@@ -21,6 +22,14 @@ from .import_service import ImportCandidate, ImportServiceError, LibraryImportSe
 from .library_service import LibraryDataError, LibraryQueryService
 from .playback_service import PlaybackService
 from .reader_service import ReaderService, ReaderServiceError
+from .software_update import (
+    PROJECT_URL,
+    RELEASES_URL,
+    ReleaseInfo,
+    SoftwareUpdateError,
+    SoftwareUpdateService,
+    is_newer_version,
+)
 from .tts_engine import SpeechController
 
 
@@ -95,6 +104,7 @@ class DesktopBridge(QObject):
     floatingPointerChanged = Signal(bool)
     appPreferencesChanged = Signal(str)
     speechPreferencesChanged = Signal(str)
+    softwareUpdateChanged = Signal(str)
 
     def __init__(
         self,
@@ -104,6 +114,7 @@ class DesktopBridge(QObject):
         reader: ReaderService | None = None,
         playback: PlaybackService | None = None,
         app_preferences: AppPreferencesService | None = None,
+        software_updates: SoftwareUpdateService | None = None,
         file_picker: Callable[[], list[str]] | None = None,
     ):
         super().__init__(window)
@@ -114,6 +125,7 @@ class DesktopBridge(QObject):
         self._reader = reader or ReaderService(library_path)
         self._playback = playback or PlaybackService(SpeechController())
         self._app = app_preferences or AppPreferencesService(library_path)
+        self._software_updates = software_updates or SoftwareUpdateService()
         self._floating = FloatingReaderService(self._playback, library_path)
         self._file_picker = file_picker or (lambda: [])
         self._selections: dict[str, tuple[ImportCandidate, ...]] = {}
@@ -135,6 +147,15 @@ class DesktopBridge(QObject):
         self._reader_timer.setInterval(25)
         self._reader_timer.timeout.connect(self._drain_reader_events)
         self._reader_timer.start()
+        self._software_update_events: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._software_update_timer = QTimer(self)
+        self._software_update_timer.setInterval(50)
+        self._software_update_timer.timeout.connect(self._drain_software_update_events)
+        self._software_update_timer.start()
+        self._software_update_thread: threading.Thread | None = None
+        self._available_update: ReleaseInfo | None = None
+        self._ready_installer_path = ""
+        self._software_update_state = self._initial_software_update_state()
         self._voice_options = self._edge_voice_options()
         self._local_voices_loading = True
         self._local_voice_error = ""
@@ -159,6 +180,7 @@ class DesktopBridge(QObject):
                 "colorScheme": "light",
                 "autoOpenLast": True,
                 "closeToTray": False,
+                "autoCheckUpdates": True,
                 "startupBookId": "",
             },
             "window": {
@@ -168,6 +190,7 @@ class DesktopBridge(QObject):
                 ),
             },
             "speech": self._speech_state(),
+            "softwareUpdate": dict(self._software_update_state),
             "capabilities": dict(CAPABILITIES),
         }
 
@@ -709,6 +732,134 @@ class DesktopBridge(QObject):
                 current, exc.code, exc.user_message, exc.retryable
             )
 
+    @Slot(str, result=str)
+    def checkSoftwareUpdate(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        manual = request.get("manual") if request is not None else None
+        if not isinstance(manual, bool):
+            return self._error_response(
+                self._software_update_state,
+                "INVALID_REQUEST",
+                "检查更新请求格式不正确。",
+            )
+        if self._software_update_thread and self._software_update_thread.is_alive():
+            return self._ok_response(self._software_update_state)
+        self._ready_installer_path = ""
+        self._set_software_update_state(self._make_software_update_state(
+            "checking", "正在连接 GitHub 检查正式版…"
+        ))
+        self._software_update_thread = threading.Thread(
+            target=self._check_software_update_worker,
+            args=(manual,),
+            name="qyreader-update-check",
+            daemon=True,
+        )
+        self._software_update_thread.start()
+        return self._ok_response(self._software_update_state)
+
+    @Slot(str, result=str)
+    def downloadSoftwareUpdate(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        version = request.get("version") if request is not None else None
+        release = self._available_update
+        if (
+            not isinstance(version, str)
+            or release is None
+            or version != release.version
+            or not is_newer_version(release.version, __version__)
+        ):
+            return self._error_response(
+                self._software_update_state,
+                "UPDATE_NOT_AVAILABLE",
+                "当前没有可下载的新版本，请先检查更新。",
+            )
+        if self._software_update_thread and self._software_update_thread.is_alive():
+            return self._ok_response(self._software_update_state)
+        self._ready_installer_path = ""
+        self._set_software_update_state(self._make_software_update_state(
+            "downloading", f"正在下载 QYReader {release.version}…", release
+        ))
+        self._software_update_thread = threading.Thread(
+            target=self._download_software_update_worker,
+            args=(release,),
+            name="qyreader-update-download",
+            daemon=True,
+        )
+        self._software_update_thread.start()
+        return self._ok_response(self._software_update_state)
+
+    @Slot(str, result=str)
+    def skipSoftwareUpdate(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        version = request.get("version") if request is not None else None
+        release = self._available_update
+        if not isinstance(version, str) or release is None or version != release.version:
+            return self._error_response(
+                self._software_update_state,
+                "UPDATE_NOT_AVAILABLE",
+                "没有可跳过的新版本。",
+            )
+        try:
+            self._app.skip_update_version(version)
+        except AppPreferencesError as exc:
+            return self._error_response(
+                self._software_update_state, exc.code, exc.user_message, exc.retryable
+            )
+        state = self._make_software_update_state(
+            "skipped", f"已跳过 QYReader {version}，下一个正式版仍会自动提醒。", release
+        )
+        self._set_software_update_state(state)
+        return self._ok_response(state)
+
+    @Slot(result=str)
+    def installSoftwareUpdate(self) -> str:
+        path = self._ready_installer_path
+        if self._software_update_state.get("status") != "ready" or not path:
+            return self._error_response(
+                self._software_update_state,
+                "UPDATE_NOT_READY",
+                "安装包尚未下载并校验完成。",
+            )
+        launch = getattr(self._window, "launchUpdateInstaller", None)
+        try:
+            started = bool(callable(launch) and launch(path))
+        except OSError:
+            started = False
+        if not started:
+            state = self._make_software_update_state(
+                "error", "无法启动更新安装程序，请重新下载或前往 GitHub 手动安装。",
+                self._available_update,
+            )
+            self._set_software_update_state(state)
+            return self._error_response(
+                state, "UPDATE_INSTALL_FAILED", state["message"], True
+            )
+        state = self._make_software_update_state(
+            "installing", "安装程序已启动，启远阅读即将退出。", self._available_update
+        )
+        self._set_software_update_state(state)
+        return self._ok_response(state)
+
+    @Slot(str, result=str)
+    def openSoftwareUpdatePage(self, target: str) -> str:
+        if target == "project":
+            url = PROJECT_URL
+        elif target == "release":
+            url = str(self._software_update_state.get("releaseUrl") or RELEASES_URL)
+        else:
+            return self._error_response(
+                self._software_update_state, "INVALID_REQUEST", "更新页面参数不正确。"
+            )
+        open_url = getattr(self._window, "openExternalUrl", None)
+        if not callable(open_url) or not open_url(url):
+            return self._error_response(
+                self._software_update_state,
+                "OPEN_URL_FAILED",
+                "无法打开浏览器，请手动访问 GitHub 项目页面。",
+                True,
+            )
+        return self._ok_response(self._software_update_state)
+
     @Slot()
     def minimizeWindow(self) -> None:
         minimize = getattr(self._window, "minimizeToTray", None)
@@ -774,6 +925,147 @@ class DesktopBridge(QObject):
             ),
         }))
 
+    def _initial_software_update_state(self) -> dict[str, Any]:
+        try:
+            last_checked_at = self._app.update_metadata()["lastCheckedAt"]
+        except AppPreferencesError:
+            last_checked_at = ""
+        return self._make_software_update_state(
+            "idle",
+            "尚未检查更新。",
+            last_checked_at=last_checked_at,
+        )
+
+    def _make_software_update_state(
+        self,
+        status: str,
+        message: str,
+        release: ReleaseInfo | None = None,
+        *,
+        last_checked_at: str | None = None,
+        downloaded_bytes: int = 0,
+        total_bytes: int = 0,
+    ) -> dict[str, Any]:
+        checked_at = (
+            str(self._software_update_state.get("lastCheckedAt") or "")
+            if last_checked_at is None and hasattr(self, "_software_update_state")
+            else str(last_checked_at or "")
+        )
+        progress = (
+            min(100, max(0, round(downloaded_bytes * 100 / total_bytes)))
+            if total_bytes > 0
+            else 0
+        )
+        return {
+            "status": status,
+            "currentVersion": __version__,
+            "latestVersion": release.version if release else "",
+            "lastCheckedAt": checked_at,
+            "message": message,
+            "releaseUrl": release.release_url if release else RELEASES_URL,
+            "progressPercent": progress,
+            "downloadedBytes": max(0, int(downloaded_bytes)),
+            "totalBytes": max(0, int(total_bytes)),
+            "canDownload": status == "available" or (
+                status == "error"
+                and release is not None
+                and is_newer_version(release.version, __version__)
+            ),
+            "canInstall": status == "ready",
+        }
+
+    def _set_software_update_state(self, state: dict[str, Any]) -> None:
+        self._software_update_state = state
+        self.softwareUpdateChanged.emit(_json(state))
+
+    def _queue_software_update_state(self, state: dict[str, Any]) -> None:
+        self._software_update_events.put(state)
+
+    def _drain_software_update_events(self) -> None:
+        while True:
+            try:
+                state = self._software_update_events.get_nowait()
+            except queue.Empty:
+                break
+            self._set_software_update_state(state)
+
+    def _check_software_update_worker(self, manual: bool) -> None:
+        checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            release = self._software_updates.check_latest()
+            self._app.record_update_check(checked_at)
+            self._available_update = release if is_newer_version(release.version, __version__) else None
+            if self._available_update is None:
+                state = self._make_software_update_state(
+                    "upToDate",
+                    f"当前已是最新版 v{__version__}。",
+                    release,
+                    last_checked_at=checked_at,
+                )
+            else:
+                metadata = self._app.update_metadata()
+                skipped = metadata["skippedVersion"] == release.version and not manual
+                state = self._make_software_update_state(
+                    "skipped" if skipped else "available",
+                    (
+                        f"已跳过 QYReader {release.version}；手动检查可再次显示更新。"
+                        if skipped
+                        else f"发现新版本 QYReader {release.version}，可以下载更新。"
+                    ),
+                    release,
+                    last_checked_at=checked_at,
+                )
+        except SoftwareUpdateError as exc:
+            state = self._make_software_update_state(
+                "error", exc.user_message, last_checked_at=checked_at
+            )
+        except AppPreferencesError as exc:
+            state = self._make_software_update_state(
+                "error", exc.user_message, last_checked_at=checked_at
+            )
+        except Exception:
+            LOGGER.exception("Unexpected software update check failure")
+            state = self._make_software_update_state(
+                "error", "检查更新失败，请稍后重试。", last_checked_at=checked_at
+            )
+        self._software_update_thread = None
+        self._queue_software_update_state(state)
+
+    def _download_software_update_worker(self, release: ReleaseInfo) -> None:
+        last_percent = -1
+
+        def progress(downloaded: int, total: int) -> None:
+            nonlocal last_percent
+            percent = round(downloaded * 100 / total) if total > 0 else 0
+            if percent == last_percent and downloaded < total:
+                return
+            last_percent = percent
+            self._queue_software_update_state(self._make_software_update_state(
+                "downloading",
+                f"正在下载 QYReader {release.version}… {percent}%" if total else f"正在下载 QYReader {release.version}…",
+                release,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+            ))
+
+        try:
+            path = self._software_updates.download(release, progress)
+            self._ready_installer_path = str(path)
+            state = self._make_software_update_state(
+                "ready", "安装包已下载并通过 SHA256 校验，可以开始安装。", release,
+                downloaded_bytes=release.installer_size,
+                total_bytes=release.installer_size,
+            )
+        except SoftwareUpdateError as exc:
+            state = self._make_software_update_state("error", exc.user_message, release)
+        except Exception:
+            LOGGER.exception("Unexpected software update download failure")
+            state = self._make_software_update_state(
+                "error", "下载更新失败，请稍后重试。", release
+            )
+        self._software_update_thread = None
+        self._queue_software_update_state(state)
+
     def shutdownImports(self) -> None:
         if self._import_cancel is not None:
             self._import_cancel.set()
@@ -788,6 +1080,7 @@ class DesktopBridge(QObject):
             self._search_cancel.set()
         self._reader_timer.stop()
         self._import_timer.stop()
+        self._software_update_timer.stop()
         shutdown_floating = getattr(self._window, "shutdownFloatingReaderWindow", None)
         if callable(shutdown_floating):
             shutdown_floating()

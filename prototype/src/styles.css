@@ -446,6 +446,28 @@ input[type="range"] { height: 3px; accent-color: #6875d8; cursor: pointer; }
 .theme-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .theme-options button { height: 36px; border: 1px solid #dde2eb; border-radius: 10px; color: #687182; background: #f7f8fb; cursor: pointer; font-size: 12px; }
 .theme-options button.selected { border-color: #7c87df; color: #5361c7; background: #eceeff; box-shadow: inset 0 0 0 1px #7c87df; }
+.software-update-section { display: grid; gap: 10px; }
+.software-update-section h3 { margin-bottom: 0; }
+.update-detail-row { min-height: 32px; display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 14px; align-items: center; color: #737b89; font-size: 12px; }
+.update-detail-row strong { color: #333945; font-size: 12px; }
+.software-update-section .confirmation-row { margin-top: 0; }
+.update-status-card { display: grid; grid-template-columns: 9px minmax(0, 1fr); gap: 11px; align-items: start; padding: 12px 14px; border: 1px solid #e4e7ed; border-radius: 11px; background: #f7f8fb; }
+.update-status-dot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: #9ca4b2; box-shadow: 0 0 0 4px rgba(156,164,178,.12); }
+.update-status-card.status-available .update-status-dot,
+.update-status-card.status-ready .update-status-dot { background: #6875d7; box-shadow: 0 0 0 4px rgba(104,117,215,.14); }
+.update-status-card.status-upToDate .update-status-dot { background: #36a477; box-shadow: 0 0 0 4px rgba(54,164,119,.13); }
+.update-status-card.status-error .update-status-dot { background: #d35b55; box-shadow: 0 0 0 4px rgba(211,91,85,.13); }
+.update-status-card.status-checking .update-status-dot,
+.update-status-card.status-downloading .update-status-dot { background: #d49b39; animation: update-status-pulse 1.1s ease-in-out infinite; }
+.update-status-card strong { display: block; margin-bottom: 3px; color: #4f5663; font-size: 11px; }
+.update-status-card p { color: #667080; font-size: 11px; }
+.update-status-card small { display: block; margin-top: 4px; color: #9aa1ad; font-size: 10px; }
+.update-progress { height: 5px; overflow: hidden; border-radius: 999px; background: #e5e8ef; }
+.update-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7380de, #5d69c8); transition: width .18s ease; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-actions .secondary-button, .update-actions .primary-button { height: 34px; }
+.software-update-section .update-security-note { color: #8d95a2; font-size: 10px; }
+@keyframes update-status-pulse { 50% { opacity: .45; transform: scale(.82); } }
 .about-section { padding-bottom: 0; }
 
 .prototype-stage[data-theme="白天"] .library-page,
@@ -493,6 +515,12 @@ input[type="range"] { height: 3px; accent-color: #6875d8; cursor: pointer; }
 .theme-dark .settings-section p { color: #a5adbb; }
 .theme-dark .theme-options button { border-color: #4b5160; color: #c7ccd6; background: #2c303a; }
 .theme-dark .theme-options button.selected { border-color: #8994ef; color: #cbd0ff; background: #41486d; }
+.theme-dark .update-detail-row { color: #aeb5c2; }
+.theme-dark .update-detail-row strong,
+.theme-dark .update-status-card strong { color: #e1e4eb; }
+.theme-dark .update-status-card { border-color: #4b5160; background: #2c303a; }
+.theme-dark .update-status-card p { color: #c4cad4; }
+.theme-dark .update-progress { background: #414754; }
 .theme-dark .settings-field { color: #c7ccd6; }
 .theme-dark .settings-field select,
 .theme-dark .color-setting button,

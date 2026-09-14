@@ -20,6 +20,7 @@ if PYSIDE6_AVAILABLE:
     from novelreader.import_service import LibraryImportService
     from novelreader.library_service import LibraryDataError
     from novelreader.qt_bridge import DesktopBridge, SCHEMA_VERSION
+    from novelreader.software_update import ReleaseInfo
 
 
 @unittest.skipUnless(PYSIDE6_AVAILABLE, "PySide6 is not installed")
@@ -62,6 +63,8 @@ class DesktopBridgeTests(unittest.TestCase):
                 self.minimized = False
                 self.closed = False
                 self.fullscreen_toggles = 0
+                self.launched_installer = ""
+                self.opened_url = ""
                 self.handle = FakeHandle()
 
             def isMaximized(self):
@@ -85,6 +88,14 @@ class DesktopBridgeTests(unittest.TestCase):
             def windowHandle(self):
                 return self.handle
 
+            def launchUpdateInstaller(self, path):
+                self.launched_installer = path
+                return True
+
+            def openExternalUrl(self, url):
+                self.opened_url = url
+                return True
+
         class FakeLibrary:
             path = self.data_dir / "library.json"
 
@@ -104,10 +115,12 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["library"]["total"], 1)
-        self.assertEqual(payload["data"]["app"]["version"], "2.0.1")
+        self.assertEqual(payload["data"]["app"]["version"], "2.0.2")
         self.assertEqual(payload["data"]["preferences"]["theme"], "护眼")
         self.assertTrue(payload["data"]["preferences"]["autoOpenLast"])
         self.assertFalse(payload["data"]["preferences"]["closeToTray"])
+        self.assertTrue(payload["data"]["preferences"]["autoCheckUpdates"])
+        self.assertEqual(payload["data"]["softwareUpdate"]["status"], "idle")
         capabilities = payload["data"]["capabilities"]
         self.assertTrue(capabilities["fileImport"])
         self.assertTrue(capabilities["pasteImport"])
@@ -130,6 +143,11 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertIn("appPreferencesChanged(QString)", signatures)
         self.assertIn("updateSpeechPreferences(QString)", signatures)
         self.assertIn("speechPreferencesChanged(QString)", signatures)
+        self.assertIn("checkSoftwareUpdate(QString)", signatures)
+        self.assertIn("downloadSoftwareUpdate(QString)", signatures)
+        self.assertIn("skipSoftwareUpdate(QString)", signatures)
+        self.assertIn("installSoftwareUpdate()", signatures)
+        self.assertIn("softwareUpdateChanged(QString)", signatures)
         self.assertIn("floatingPointerChanged(bool)", signatures)
         self.assertIn("toggleFullscreen()", signatures)
 
@@ -190,6 +208,70 @@ class DesktopBridgeTests(unittest.TestCase):
         })))
         self.assertFalse(rejected["ok"])
         self.assertEqual(rejected["error"]["code"], "INVALID_REQUEST")
+
+    def test_software_update_check_download_skip_install_and_open_page(self):
+        installer_path = Path(self.tempdir.name) / "QYReader-Setup-2.0.3.exe"
+
+        class FakeSoftwareUpdates:
+            @staticmethod
+            def check_latest():
+                return ReleaseInfo(
+                    version="2.0.3",
+                    tag="v2.0.3",
+                    release_url="https://github.com/superadminist/QYReader/releases/tag/v2.0.3",
+                    published_at="2026-09-14T09:00:00Z",
+                    installer_name="QYReader-Setup-2.0.3.exe",
+                    installer_url="https://github.com/superadminist/QYReader/releases/download/v2.0.3/QYReader-Setup-2.0.3.exe",
+                    installer_size=9,
+                    checksum_url="https://github.com/superadminist/QYReader/releases/download/v2.0.3/SHA256SUMS.txt",
+                )
+
+            @staticmethod
+            def download(_release, progress):
+                installer_path.write_bytes(b"installer")
+                progress(9, 9)
+                return installer_path
+
+        self.bridge._software_updates = FakeSoftwareUpdates()
+        update_spy = QSignalSpy(self.bridge.softwareUpdateChanged)
+
+        mark = update_spy.count()
+        started = json.loads(self.bridge.checkSoftwareUpdate(json.dumps({"manual": True})))
+        self.assertEqual(started["data"]["status"], "checking")
+        self._wait_for_update_status(update_spy, "available", mark)
+
+        skipped = json.loads(self.bridge.skipSoftwareUpdate(json.dumps({"version": "2.0.3"})))
+        self.assertEqual(skipped["data"]["status"], "skipped")
+        metadata = self.bridge._app.update_metadata()
+        self.assertEqual(metadata["skippedVersion"], "2.0.3")
+
+        mark = update_spy.count()
+        self.bridge.checkSoftwareUpdate(json.dumps({"manual": True}))
+        self._wait_for_update_status(update_spy, "available", mark)
+        mark = update_spy.count()
+        downloading = json.loads(self.bridge.downloadSoftwareUpdate(json.dumps({"version": "2.0.3"})))
+        self.assertEqual(downloading["data"]["status"], "downloading")
+        ready = self._wait_for_update_status(update_spy, "ready", mark)
+        self.assertEqual(ready["progressPercent"], 100)
+        self.assertTrue(ready["canInstall"])
+
+        opened = json.loads(self.bridge.openSoftwareUpdatePage("release"))
+        self.assertTrue(opened["ok"])
+        self.assertTrue(self.window.opened_url.endswith("/tag/v2.0.3"))
+        installing = json.loads(self.bridge.installSoftwareUpdate())
+        self.assertEqual(installing["data"]["status"], "installing")
+        self.assertEqual(self.window.launched_installer, str(installer_path))
+
+    def _wait_for_update_status(self, spy, expected, start_index=0):
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            self.app.processEvents()
+            for index in range(start_index, spy.count()):
+                state = json.loads(spy.at(index)[0])
+                if state["status"] == expected:
+                    return state
+            time.sleep(0.01)
+        self.fail(f"software update state did not reach {expected}")
 
     def test_invalid_resize_edge_emits_bridge_error(self):
         error_spy = QSignalSpy(self.bridge.bridgeError)

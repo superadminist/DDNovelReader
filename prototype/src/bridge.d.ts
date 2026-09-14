@@ -34,7 +34,33 @@ export interface AppPreferences {
   colorScheme: "light" | "dark";
   autoOpenLast: boolean;
   closeToTray: boolean;
+  autoCheckUpdates: boolean;
   startupBookId: string;
+}
+
+export type SoftwareUpdateStatus =
+  | "idle"
+  | "checking"
+  | "upToDate"
+  | "available"
+  | "skipped"
+  | "downloading"
+  | "ready"
+  | "installing"
+  | "error";
+
+export interface SoftwareUpdateState {
+  status: SoftwareUpdateStatus;
+  currentVersion: string;
+  latestVersion: string;
+  lastCheckedAt: string;
+  message: string;
+  releaseUrl: string;
+  progressPercent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  canDownload: boolean;
+  canInstall: boolean;
 }
 
 export interface SpeechVoiceOption {
@@ -63,6 +89,7 @@ export interface InitialStateData {
   preferences: AppPreferences;
   window: { isMaximized: boolean; isFullScreen: boolean };
   speech: SpeechState;
+  softwareUpdate: SoftwareUpdateState;
   capabilities: {
     fileImport: boolean;
     pasteImport: boolean;
@@ -454,8 +481,16 @@ export interface FloatingReaderControls {
 
 export interface AppControls {
   updatePreferences(input: {
-    patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast" | "closeToTray">>;
+    patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast" | "closeToTray" | "autoCheckUpdates">>;
   }): Promise<BridgeResponse<AppPreferences>>;
+}
+
+export interface SoftwareUpdateControls {
+  check(input?: { manual: boolean }): Promise<BridgeResponse<SoftwareUpdateState>>;
+  download(version: string): Promise<BridgeResponse<SoftwareUpdateState>>;
+  skip(version: string): Promise<BridgeResponse<SoftwareUpdateState>>;
+  install(): Promise<BridgeResponse<SoftwareUpdateState>>;
+  openPage(target: "project" | "release"): Promise<BridgeResponse<SoftwareUpdateState>>;
 }
 
 export interface SpeechControls {
@@ -478,6 +513,7 @@ export interface BridgeConnection {
   initialState: InitialStateResponse;
   controls: WindowControls;
   app: AppControls;
+  updates: SoftwareUpdateControls;
   speech: SpeechControls;
   imports: ImportControls;
   reader: ReaderControls;
@@ -486,6 +522,7 @@ export interface BridgeConnection {
   onWindowStateChanged(callback: (state: { isMaximized: boolean; isFullScreen: boolean }) => void): void;
   onAppPreferencesChanged(callback: (preferences: AppPreferences) => void): void;
   onSpeechPreferencesChanged(callback: (speech: SpeechState) => void): void;
+  onSoftwareUpdateChanged(callback: (state: SoftwareUpdateState) => void): void;
   onImportProgress(callback: (event: ImportProgressEvent) => void): void;
   onImportFinished(callback: (event: ImportFinishedEvent) => void): void;
   onReaderOpened(callback: (event: ReaderOpenedEvent) => void): void;

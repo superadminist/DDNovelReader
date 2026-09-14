@@ -45,9 +45,9 @@ function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
 }
 
 const EMPTY_DATA = {
-  app: { version: "2.0.1" },
+  app: { version: "2.0.2" },
   library: { books: [], total: 0 },
-  preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, closeToTray: false, startupBookId: "" },
+  preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, closeToTray: false, autoCheckUpdates: true, startupBookId: "" },
   window: { isMaximized: false, isFullScreen: false },
   speech: {
     settings: { ttsRate: 200, ttsVoiceId: "", sentenceGapSeconds: 0.1 },
@@ -57,6 +57,19 @@ const EMPTY_DATA = {
     ],
     loadingLocalVoices: false,
     localVoiceError: "",
+  },
+  softwareUpdate: {
+    status: "idle",
+    currentVersion: "2.0.2",
+    latestVersion: "",
+    lastCheckedAt: "",
+    message: "尚未检查更新。",
+    releaseUrl: "https://github.com/superadminist/QYReader/releases",
+    progressPercent: 0,
+    downloadedBytes: 0,
+    totalBytes: 0,
+    canDownload: false,
+    canInstall: false,
   },
   capabilities: {
     fileImport: false,
@@ -89,6 +102,7 @@ const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", 
 const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "finished", "fallback", "error"]);
 const FLOATING_BACKGROUNDS = new Set(["light", "sepia", "dark"]);
 const APP_THEMES = new Set(["白天", "护眼", "夜间", "米黄"]);
+const SOFTWARE_UPDATE_STATUSES = new Set(["idle", "checking", "upToDate", "available", "skipped", "downloading", "ready", "installing", "error"]);
 const WINDOW_RESIZE_EDGES = new Set(["top", "right", "bottom", "left", "topRight", "bottomRight", "bottomLeft", "topLeft"]);
 const FLOATING_SETTING_FIELDS = {
   topmost: "boolean",
@@ -137,7 +151,26 @@ function validAppPreferences(preferences) {
     && (preferences.colorScheme === "dark") === (preferences.theme === "夜间")
     && typeof preferences.autoOpenLast === "boolean"
     && typeof preferences.closeToTray === "boolean"
+    && typeof preferences.autoCheckUpdates === "boolean"
     && typeof preferences.startupBookId === "string",
+  );
+}
+
+function validSoftwareUpdateState(state) {
+  return Boolean(
+    state
+    && SOFTWARE_UPDATE_STATUSES.has(state.status)
+    && typeof state.currentVersion === "string"
+    && typeof state.latestVersion === "string"
+    && typeof state.lastCheckedAt === "string"
+    && typeof state.message === "string"
+    && typeof state.releaseUrl === "string"
+    && nonNegativeNumber(state.progressPercent)
+    && state.progressPercent <= 100
+    && nonNegativeNumber(state.downloadedBytes)
+    && nonNegativeNumber(state.totalBytes)
+    && typeof state.canDownload === "boolean"
+    && typeof state.canInstall === "boolean",
   );
 }
 
@@ -254,6 +287,7 @@ export function parseInitialState(raw) {
     || typeof payload.data?.window?.isMaximized !== "boolean"
     || typeof payload.data?.window?.isFullScreen !== "boolean"
     || !validSpeechState(payload.data?.speech)
+    || !validSoftwareUpdateState(payload.data?.softwareUpdate)
     || !validCapabilities
   ) {
     throw new BridgeProtocolError("桌面通信返回的数据结构不完整。", "BRIDGE_INVALID_PAYLOAD");
@@ -829,6 +863,45 @@ function nativeSpeech(nativeBridge) {
   };
 }
 
+function nativeSoftwareUpdates(nativeBridge) {
+  return {
+    async check(input = { manual: true }) {
+      if (!input || typeof input.manual !== "boolean") throw new BridgeProtocolError("检查更新参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "checkSoftwareUpdate", [JSON.stringify(input)]),
+        validSoftwareUpdateState,
+      );
+    },
+    async download(version) {
+      if (typeof version !== "string" || !version) throw new BridgeProtocolError("更新版本号无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "downloadSoftwareUpdate", [JSON.stringify({ version })]),
+        validSoftwareUpdateState,
+      );
+    },
+    async skip(version) {
+      if (typeof version !== "string" || !version) throw new BridgeProtocolError("更新版本号无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "skipSoftwareUpdate", [JSON.stringify({ version })]),
+        validSoftwareUpdateState,
+      );
+    },
+    async install() {
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "installSoftwareUpdate"),
+        validSoftwareUpdateState,
+      );
+    },
+    async openPage(target) {
+      if (!["project", "release"].includes(target)) throw new BridgeProtocolError("更新页面参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "openSoftwareUpdatePage", [target]),
+        validSoftwareUpdateState,
+      );
+    },
+  };
+}
+
 function nativeApp(nativeBridge) {
   return {
     async updatePreferences(input) {
@@ -840,6 +913,7 @@ function nativeApp(nativeBridge) {
           (field === "theme" && APP_THEMES.has(value))
           || (field === "autoOpenLast" && typeof value === "boolean")
           || (field === "closeToTray" && typeof value === "boolean")
+          || (field === "autoCheckUpdates" && typeof value === "boolean")
         ));
       if (!validPatch) throw new BridgeProtocolError("应用设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
       return parseBridgeResponse(
@@ -867,6 +941,7 @@ function createNativeConnection(nativeBridge, initialState) {
     initialState,
     controls: nativeControls(nativeBridge),
     app: nativeApp(nativeBridge),
+    updates: nativeSoftwareUpdates(nativeBridge),
     speech: nativeSpeech(nativeBridge),
     imports: nativeImports(nativeBridge),
     reader: nativeReader(nativeBridge),
@@ -902,6 +977,15 @@ function createNativeConnection(nativeBridge, initialState) {
           const event = parseJsonPayload(raw, "朗读设置事件无效。");
           if (!validSpeechChangedEvent(event)) throw new BridgeProtocolError("朗读设置事件无效。", "BRIDGE_INVALID_PAYLOAD");
           callback(event.state);
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
+    onSoftwareUpdateChanged(callback) {
+      signalSubscription(nativeBridge.softwareUpdateChanged, (raw) => {
+        try {
+          callback(parseImportEvent(raw, validSoftwareUpdateState, "软件更新状态事件无效。"));
         } catch (error) {
           reportProtocolError(error);
         }
@@ -991,6 +1075,7 @@ function createDemoConnection() {
   const floatingChangedCallbacks = new Set();
   const appPreferencesCallbacks = new Set();
   const speechPreferencesCallbacks = new Set();
+  const softwareUpdateCallbacks = new Set();
   const jobs = new Map();
   let jobSequence = 0;
   let readerSequence = 0;
@@ -1000,6 +1085,7 @@ function createDemoConnection() {
   let demoPlaybackState = demoPlayback(demoPosition);
   let demoFloating = demoFloatingState();
   let demoSpeech = { ...initialState.data.speech, settings: { ...initialState.data.speech.settings } };
+  let demoSoftwareUpdate = { ...initialState.data.softwareUpdate };
 
   const emit = (callbacks, payload) => callbacks.forEach((callback) => callback(payload));
   const response = (data) => ({ schemaVersion: SCHEMA_VERSION, ok: true, data, error: null });
@@ -1106,6 +1192,29 @@ function createDemoConnection() {
         emit(appPreferencesCallbacks, next);
         return response(next);
       },
+    },
+    updates: {
+      async check() {
+        demoSoftwareUpdate = {
+          ...demoSoftwareUpdate,
+          status: "upToDate",
+          latestVersion: demoSoftwareUpdate.currentVersion,
+          lastCheckedAt: new Date().toISOString(),
+          message: `当前已是最新版 v${demoSoftwareUpdate.currentVersion}。`,
+          progressPercent: 0,
+          downloadedBytes: 0,
+          totalBytes: 0,
+          canDownload: false,
+          canInstall: false,
+        };
+        initialState.data.softwareUpdate = demoSoftwareUpdate;
+        emit(softwareUpdateCallbacks, demoSoftwareUpdate);
+        return response(demoSoftwareUpdate);
+      },
+      async download() { return response(demoSoftwareUpdate); },
+      async skip() { return response(demoSoftwareUpdate); },
+      async install() { return response(demoSoftwareUpdate); },
+      async openPage() { return response(demoSoftwareUpdate); },
     },
     speech: {
       async updatePreferences(input) {
@@ -1237,6 +1346,7 @@ function createDemoConnection() {
     onWindowStateChanged() {},
     onAppPreferencesChanged(callback) { appPreferencesCallbacks.add(callback); },
     onSpeechPreferencesChanged(callback) { speechPreferencesCallbacks.add(callback); },
+    onSoftwareUpdateChanged(callback) { softwareUpdateCallbacks.add(callback); },
     onImportProgress(callback) { progressCallbacks.add(callback); },
     onImportFinished(callback) { finishedCallbacks.add(callback); },
     onReaderOpened(callback) { readerOpenedCallbacks.add(callback); },
@@ -1255,6 +1365,7 @@ function createDemoConnection() {
       floatingChangedCallbacks.clear();
       appPreferencesCallbacks.clear();
       speechPreferencesCallbacks.clear();
+      softwareUpdateCallbacks.clear();
     },
   };
 }

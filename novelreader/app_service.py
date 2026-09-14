@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from .storage import DEFAULT_SETTINGS
 
 
 APP_THEMES = {"白天", "护眼", "夜间", "米黄"}
+VERSION_PATTERN = re.compile(r"^(?:v)?\d+\.\d+\.\d+$")
 
 
 class AppPreferencesError(Exception):
@@ -46,6 +48,14 @@ class AppPreferencesService:
             if isinstance(close_to_tray, bool)
             else DEFAULT_SETTINGS["close_to_tray"]
         )
+        auto_check_updates = settings.get(
+            "auto_check_updates", DEFAULT_SETTINGS["auto_check_updates"]
+        )
+        auto_check_updates = (
+            auto_check_updates
+            if isinstance(auto_check_updates, bool)
+            else DEFAULT_SETTINGS["auto_check_updates"]
+        )
         last_book = str(settings.get("last_book") or "")
         startup_book = last_book if auto_open and last_book in books else ""
         return {
@@ -53,6 +63,7 @@ class AppPreferencesService:
             "colorScheme": "dark" if theme == "夜间" else "light",
             "autoOpenLast": auto_open,
             "closeToTray": close_to_tray,
+            "autoCheckUpdates": auto_check_updates,
             "startupBookId": startup_book,
         }
 
@@ -60,7 +71,7 @@ class AppPreferencesService:
         if (
             not isinstance(patch, dict)
             or not patch
-            or set(patch) - {"theme", "autoOpenLast", "closeToTray"}
+            or set(patch) - {"theme", "autoOpenLast", "closeToTray", "autoCheckUpdates"}
         ):
             raise AppPreferencesError("INVALID_REQUEST", "应用设置参数不正确。")
         updates: dict[str, Any] = {}
@@ -79,6 +90,11 @@ class AppPreferencesService:
             if not isinstance(close_to_tray, bool):
                 raise AppPreferencesError("INVALID_REQUEST", "关闭按钮设置不正确。")
             updates["close_to_tray"] = close_to_tray
+        if "autoCheckUpdates" in patch:
+            auto_check_updates = patch["autoCheckUpdates"]
+            if not isinstance(auto_check_updates, bool):
+                raise AppPreferencesError("INVALID_REQUEST", "自动检查更新设置不正确。")
+            updates["auto_check_updates"] = auto_check_updates
 
         with library_write_lock(self.library_path):
             payload = self._load()
@@ -87,21 +103,56 @@ class AppPreferencesService:
             if not isinstance(books, dict) or not isinstance(settings, dict):
                 raise AppPreferencesError("LIBRARY_INVALID", "应用设置无法保存，书架数据格式不正确。")
             settings.update(updates)
-            self.library_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.library_path.with_suffix(self.library_path.suffix + ".tmp")
-            try:
-                with temporary.open("w", encoding="utf-8") as stream:
-                    json.dump(payload, stream, ensure_ascii=False, indent=1)
-                os.replace(temporary, self.library_path)
-            except OSError as exc:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise AppPreferencesError(
-                    "PREFERENCES_SAVE_FAILED", "应用设置保存失败，请稍后重试。", True
-                ) from exc
+            self._save(payload)
         return self.state()
+
+    def update_metadata(self) -> dict[str, str]:
+        payload = self._load()
+        settings = payload.get("settings")
+        if not isinstance(settings, dict):
+            raise AppPreferencesError("LIBRARY_INVALID", "更新设置无法读取。")
+        skipped = settings.get("skipped_update_version", "")
+        checked_at = settings.get("last_update_check_at", "")
+        return {
+            "skippedVersion": skipped if isinstance(skipped, str) else "",
+            "lastCheckedAt": checked_at if isinstance(checked_at, str) else "",
+        }
+
+    def record_update_check(self, checked_at: str) -> None:
+        if not isinstance(checked_at, str) or not checked_at or len(checked_at) > 64:
+            raise AppPreferencesError("INVALID_REQUEST", "更新时间记录不正确。")
+        self._update_internal({"last_update_check_at": checked_at})
+
+    def skip_update_version(self, version: str) -> None:
+        if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
+            raise AppPreferencesError("INVALID_REQUEST", "跳过的版本号不正确。")
+        self._update_internal({"skipped_update_version": version.lstrip("v")})
+
+    def _update_internal(self, updates: dict[str, Any]) -> None:
+        with library_write_lock(self.library_path):
+            payload = self._load()
+            books = payload.get("books")
+            settings = payload.get("settings")
+            if not isinstance(books, dict) or not isinstance(settings, dict):
+                raise AppPreferencesError("LIBRARY_INVALID", "更新设置无法保存。")
+            settings.update(updates)
+            self._save(payload)
+
+    def _save(self, payload: dict[str, Any]) -> None:
+        self.library_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.library_path.with_suffix(self.library_path.suffix + ".tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=1)
+            os.replace(temporary, self.library_path)
+        except OSError as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise AppPreferencesError(
+                "PREFERENCES_SAVE_FAILED", "应用设置保存失败，请稍后重试。", True
+            ) from exc
 
     def _load(self) -> dict[str, Any]:
         if not self.library_path.exists():

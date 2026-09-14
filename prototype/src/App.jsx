@@ -50,7 +50,22 @@ const DEFAULT_APP_PREFERENCES = {
   colorScheme: "light",
   autoOpenLast: true,
   closeToTray: false,
+  autoCheckUpdates: true,
   startupBookId: "",
+};
+
+const DEFAULT_SOFTWARE_UPDATE = {
+  status: "idle",
+  currentVersion: "2.0.2",
+  latestVersion: "",
+  lastCheckedAt: "",
+  message: "尚未检查更新。",
+  releaseUrl: "https://github.com/superadminist/QYReader/releases",
+  progressPercent: 0,
+  downloadedBytes: 0,
+  totalBytes: 0,
+  canDownload: false,
+  canInstall: false,
 };
 
 const DEFAULT_SPEECH_STATE = {
@@ -893,7 +908,16 @@ function SettingsRange({ label, value, min, max, step, disabled, formatValue, on
   );
 }
 
-function SettingsModal({ preferences, speech, floatingSettings, version, pending, onUpdateApp, onUpdateSpeech, onUpdateFloating, onClose }) {
+function formatUpdateTime(value) {
+  if (!value) return "尚未检查";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "尚未检查";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).format(date);
+}
+
+function SettingsModal({ preferences, speech, floatingSettings, version, softwareUpdate, pending, onUpdateApp, onUpdateSpeech, onUpdateFloating, onCheckUpdate, onDownloadUpdate, onSkipUpdate, onInstallUpdate, onOpenUpdatePage, onClose }) {
   const themes = ["白天", "护眼", "米黄", "夜间"];
   const edgeVoices = speech.voices.filter((voice) => voice.backend === "edge");
   const localVoices = speech.voices.filter((voice) => voice.backend === "sapi");
@@ -902,7 +926,7 @@ function SettingsModal({ preferences, speech, floatingSettings, version, pending
   const pickerColor = floatingPickerColor(floatingSettings);
   return (
     <div className="modal-backdrop"><div className="paste-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div className="modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>外观、启动与本地数据</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
+      <div className="modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>外观、朗读、更新与本地数据</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
       <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={isPending("app", "theme")} onClick={() => onUpdateApp({ theme })}>{theme}</button>)}</div></section>
       <section className="settings-section speech-settings"><h3>朗读设置</h3>
         <label className="settings-field"><span>朗读音色</span><select value={speech.settings.ttsVoiceId} disabled={isPending("speech", "ttsVoiceId")} onChange={(event) => onUpdateSpeech({ ttsVoiceId: event.target.value })}>
@@ -925,7 +949,23 @@ function SettingsModal({ preferences, speech, floatingSettings, version, pending
         <label className="confirmation-row"><input type="checkbox" checked={preferences.closeToTray} disabled={isPending("app", "closeToTray")} onChange={(event) => onUpdateApp({ closeToTray: event.target.checked })} />点击关闭按钮时最小化到系统托盘（关闭此开关则退出程序）</label>
       </section>
       <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 QYReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
-      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.1"} · Qt WebEngine 桌面版</p></section>
+      <section className="settings-section software-update-section"><h3>软件更新</h3>
+        <div className="update-detail-row"><span>当前版本</span><strong>v{version || softwareUpdate.currentVersion}</strong></div>
+        <label className="confirmation-row"><input type="checkbox" checked={preferences.autoCheckUpdates} disabled={isPending("app", "autoCheckUpdates")} onChange={(event) => onUpdateApp({ autoCheckUpdates: event.target.checked })} />启动时自动检查正式版更新</label>
+        <div className="update-detail-row"><span>更新通道</span><strong>正式版</strong></div>
+        <div className={`update-status-card status-${softwareUpdate.status}`}><span className="update-status-dot" /><div><strong>检查状态</strong><p>{softwareUpdate.message}</p><small>上次检查：{formatUpdateTime(softwareUpdate.lastCheckedAt)}</small></div></div>
+        {softwareUpdate.status === "downloading" ? <div className="update-progress" aria-label={`更新下载进度 ${softwareUpdate.progressPercent}%`}><span style={{ width: `${softwareUpdate.progressPercent}%` }} /></div> : null}
+        <div className="update-actions">
+          <button className="secondary-button" disabled={["checking", "downloading", "installing"].includes(softwareUpdate.status)} onClick={onCheckUpdate}>{softwareUpdate.status === "checking" ? "正在检查…" : "检查更新"}</button>
+          {softwareUpdate.canDownload ? <button className="primary-button" onClick={onDownloadUpdate}>下载更新</button> : null}
+          {softwareUpdate.canInstall ? <button className="primary-button" onClick={onInstallUpdate}>立即安装</button> : null}
+          {softwareUpdate.status === "available" ? <button className="secondary-button" onClick={onSkipUpdate}>跳过 v{softwareUpdate.latestVersion}</button> : null}
+          <button className="secondary-button" onClick={() => onOpenUpdatePage("project")}>GitHub 项目主页</button>
+          {softwareUpdate.latestVersion ? <button className="secondary-button" onClick={() => onOpenUpdatePage("release")}>查看发布说明</button> : null}
+        </div>
+        <p className="update-security-note">仅从本项目 GitHub Release 下载与版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
+      </section>
+      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.2"} · Qt WebEngine 桌面版</p></section>
     </div></div>
   );
 }
@@ -956,7 +996,8 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.1");
+  const [appVersion, setAppVersion] = useState("2.0.2");
+  const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsPendingRef = useRef(new Set());
   const [settingsPending, setSettingsPending] = useState([]);
@@ -969,6 +1010,7 @@ function MainApplication() {
   const pendingOpenIntentRef = useRef(null);
   const consumedOpenIntentsRef = useRef(new Set());
   const startupIntentConsumedRef = useRef(false);
+  const updateCheckStartedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -993,6 +1035,7 @@ function MainApplication() {
       setSpeechState(connected.initialState.data.speech);
       setWindowState(connected.initialState.data.window);
       setAppVersion(connected.initialState.data.app.version);
+      setSoftwareUpdate(connected.initialState.data.softwareUpdate);
       setWindowControls(connected.controls);
       connected.onBridgeError((raw) => {
         if (active) setBridgeError(readBridgeMessage(raw));
@@ -1002,6 +1045,9 @@ function MainApplication() {
       });
       connected.onSpeechPreferencesChanged((speech) => {
         if (active) setSpeechState(speech);
+      });
+      connected.onSoftwareUpdateChanged((state) => {
+        if (active) setSoftwareUpdate(state);
       });
       connected.onWindowStateChanged((nextWindowState) => {
         if (active) setWindowState(nextWindowState);
@@ -1134,6 +1180,14 @@ function MainApplication() {
           && connected.initialState.data.library.books.some((book) => book.id === startupBookId);
         if (canAutoOpen) beginReaderOpen(connected, startupBookId);
       }
+      if (!updateCheckStartedRef.current && connected.initialState.data.preferences.autoCheckUpdates) {
+        updateCheckStartedRef.current = true;
+        connected.updates.check({ manual: false }).then((response) => {
+          if (active && connectionRef.current === connected) setSoftwareUpdate(response.data);
+        }).catch((error) => {
+          if (active) setBridgeError(error.message || "自动检查更新失败。");
+        });
+      }
       setLibraryLoading(false);
     };
     connectBridge().then(attachConnection).catch((error) => {
@@ -1143,7 +1197,8 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.1");
+      setAppVersion(error.initialData?.app?.version || "2.0.2");
+      setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
     });
@@ -1390,6 +1445,14 @@ function MainApplication() {
     try {
       const response = await connection.app.updatePreferences({ patch });
       setAppPreferences(response.data);
+      if (patch.autoCheckUpdates === true) {
+        updateCheckStartedRef.current = true;
+        connection.updates.check({ manual: false }).then((updateResponse) => {
+          if (connectionRef.current === connection) setSoftwareUpdate(updateResponse.data);
+        }).catch((error) => {
+          setBridgeError(error.message || "自动检查更新失败。");
+        });
+      }
     } catch (error) {
       setBridgeError(error.message || "应用设置保存失败。");
     } finally {
@@ -1436,6 +1499,55 @@ function MainApplication() {
       setBridgeError(error.message || "悬浮朗读设置保存失败。");
     } finally {
       finishSettingsSave(pendingIds);
+    }
+  };
+  const checkForUpdates = async () => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      const response = await connection.updates.check({ manual: true });
+      setSoftwareUpdate(response.data);
+    } catch (error) {
+      setBridgeError(error.message || "检查更新失败。");
+    }
+  };
+  const downloadUpdate = async () => {
+    const connection = connectionRef.current;
+    if (!connection || !softwareUpdate.latestVersion) return;
+    try {
+      const response = await connection.updates.download(softwareUpdate.latestVersion);
+      setSoftwareUpdate(response.data);
+    } catch (error) {
+      setBridgeError(error.message || "下载更新失败。");
+    }
+  };
+  const skipUpdate = async () => {
+    const connection = connectionRef.current;
+    if (!connection || !softwareUpdate.latestVersion) return;
+    try {
+      const response = await connection.updates.skip(softwareUpdate.latestVersion);
+      setSoftwareUpdate(response.data);
+    } catch (error) {
+      setBridgeError(error.message || "无法跳过该版本。");
+    }
+  };
+  const installUpdate = async () => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      const response = await connection.updates.install();
+      setSoftwareUpdate(response.data);
+    } catch (error) {
+      setBridgeError(error.message || "无法启动更新安装程序。");
+    }
+  };
+  const openUpdatePage = async (target) => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      await connection.updates.openPage(target);
+    } catch (error) {
+      setBridgeError(error.message || "无法打开 GitHub 页面。");
     }
   };
   const toggleDarkMode = () => updateAppPreferences({ theme: appPreferences.colorScheme === "dark" ? "护眼" : "夜间" });
@@ -1502,7 +1614,7 @@ function MainApplication() {
       {floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}
       {pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}
       {importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}
-      {settingsOpen && <SettingsModal preferences={appPreferences} speech={speechState} floatingSettings={nativeFloatingState?.settings || EMPTY_FLOATING_STATE.settings} version={appVersion} pending={settingsPending} onUpdateApp={updateAppPreferences} onUpdateSpeech={updateSpeechPreferences} onUpdateFloating={updateFloatingPreferences} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal preferences={appPreferences} speech={speechState} floatingSettings={nativeFloatingState?.settings || EMPTY_FLOATING_STATE.settings} version={appVersion} softwareUpdate={softwareUpdate} pending={settingsPending} onUpdateApp={updateAppPreferences} onUpdateSpeech={updateSpeechPreferences} onUpdateFloating={updateFloatingPreferences} onCheckUpdate={checkForUpdates} onDownloadUpdate={downloadUpdate} onSkipUpdate={skipUpdate} onInstallUpdate={installUpdate} onOpenUpdatePage={openUpdatePage} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

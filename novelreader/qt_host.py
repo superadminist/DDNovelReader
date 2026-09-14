@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QFile, QIODevice, QRect, QTimer, Qt, QUrl, QUrlQuery
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QGuiApplication, QIcon, QRegion
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QGuiApplication, QIcon, QRegion
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
@@ -496,6 +496,17 @@ class DesktopWindow(QMainWindow):
     def requestApplicationExit(self) -> None:
         self._exit_requested = True
         self.close()
+
+    def openExternalUrl(self, url: str) -> bool:
+        return bool(QDesktopServices.openUrl(QUrl(url)))
+
+    def launchUpdateInstaller(self, path: str) -> bool:
+        installer = Path(path)
+        if os.name != "nt" or not installer.is_file() or installer.suffix.lower() != ".exe":
+            return False
+        os.startfile(os.fspath(installer))
+        QTimer.singleShot(500, self.requestApplicationExit)
+        return True
 
     def _select_import_files(self) -> list[str]:
         patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_EXTS))
