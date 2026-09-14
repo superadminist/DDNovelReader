@@ -59,6 +59,23 @@ jobs:
           "checksum=$($checksumFile.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         id: assets
 
+      - name: Require user-facing release notes
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $notesPath = Join-Path $env:GITHUB_WORKSPACE "release-notes/$($env:RELEASE_TAG).md"
+          if (-not (Test-Path -LiteralPath $notesPath)) {
+            throw "Release notes are required: release-notes/$($env:RELEASE_TAG).md"
+          }
+
+          if ([string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $notesPath -Raw))) {
+            throw "Release notes file is empty: $notesPath"
+          }
+
+          "notes=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: notes
+
       - name: Publish GitHub release
         shell: pwsh
         env:
@@ -66,12 +83,14 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           INSTALLER_PATH: ${{ steps.assets.outputs.installer }}
           CHECKSUM_PATH: ${{ steps.assets.outputs.checksum }}
+          RELEASE_NOTES_PATH: ${{ steps.notes.outputs.notes }}
         run: |
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --clobber
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --notes-file $env:RELEASE_NOTES_PATH
           } else {
-            gh release create $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --verify-tag --generate-notes --title "QYReader $env:RELEASE_TAG"
+            gh release create $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --verify-tag --notes-file $env:RELEASE_NOTES_PATH --title "QYReader $env:RELEASE_TAG"
           }
           if ($LASTEXITCODE -ne 0) { throw "GitHub release creation or upload failed" }
           gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
