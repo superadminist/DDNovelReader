@@ -6,6 +6,15 @@ APP_NAME = "启远阅读"
 # 最新版本在前。每次发版时在此追加新条目，并同步更新 novelreader/__init__.py 的 __version__。
 VERSION_HISTORY = [
     {
+        "version": "2.0.1",
+        "date": "2026-09-14",
+        "changes": [
+            "修复 Edge 朗读在句子边界暂停后继续时可能一直无响应的问题",
+            "修复设置窗口在 Qt WebEngine 中偶发整层闪烁的问题",
+            "新增关闭按钮行为设置，可选择退出程序或最小化到系统托盘",
+        ],
+    },
+    {
         "version": "2.0.0",
         "date": "2026-09-12",
         "changes": [

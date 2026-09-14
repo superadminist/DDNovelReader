@@ -101,6 +101,7 @@ DEFAULT_SETTINGS = {
     "line_spacing": 1.5,
     "theme": "护眼",
     "auto_open_last": True,
+    "close_to_tray": False,
     "tts_rate": 200,
     "tts_voice": "",
     "window_geometry": "",

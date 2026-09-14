@@ -45,9 +45,9 @@ function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
 }
 
 const EMPTY_DATA = {
-  app: { version: "2.0.0" },
+  app: { version: "2.0.1" },
   library: { books: [], total: 0 },
-  preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, startupBookId: "" },
+  preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, closeToTray: false, startupBookId: "" },
   window: { isMaximized: false, isFullScreen: false },
   speech: {
     settings: { ttsRate: 200, ttsVoiceId: "", sentenceGapSeconds: 0.1 },
@@ -136,6 +136,7 @@ function validAppPreferences(preferences) {
     && ["light", "dark"].includes(preferences.colorScheme)
     && (preferences.colorScheme === "dark") === (preferences.theme === "夜间")
     && typeof preferences.autoOpenLast === "boolean"
+    && typeof preferences.closeToTray === "boolean"
     && typeof preferences.startupBookId === "string",
   );
 }
@@ -838,6 +839,7 @@ function nativeApp(nativeBridge) {
         && Object.entries(patch).every(([field, value]) => (
           (field === "theme" && APP_THEMES.has(value))
           || (field === "autoOpenLast" && typeof value === "boolean")
+          || (field === "closeToTray" && typeof value === "boolean")
         ));
       if (!validPatch) throw new BridgeProtocolError("应用设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
       return parseBridgeResponse(

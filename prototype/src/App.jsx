@@ -49,6 +49,7 @@ const DEFAULT_APP_PREFERENCES = {
   theme: "护眼",
   colorScheme: "light",
   autoOpenLast: true,
+  closeToTray: false,
   startupBookId: "",
 };
 
@@ -919,9 +920,12 @@ function SettingsModal({ preferences, speech, floatingSettings, version, pending
         <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.followReaderFont} disabled={isPending("floating", "followReaderFont")} onChange={(event) => onUpdateFloating({ followReaderFont: event.target.checked })} />跟随主阅读器字号（在悬浮正文中滚动滚轮会自动关闭）</label>
         <div className="settings-field color-setting"><span>朗读字体颜色</span><div><input aria-label="悬浮窗朗读字体颜色" title="选择颜色后立即切换为自定义配色" type="color" value={pickerColor} onChange={(event) => { const patch = floatingTextColorPatch(event.target.value); if (patch) onUpdateFloating(patch); }} /><button className={!customTextColor ? "selected" : ""} onClick={() => onUpdateFloating({ textColor: "auto" })}>自动配色</button><span className="color-setting-value">{customTextColor ? floatingSettings.textColor : "选择颜色即使用"}</span></div></div>
       </section>
-      <section className="settings-section"><h3>启动</h3><label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label></section>
+      <section className="settings-section"><h3>启动与关闭</h3>
+        <label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label>
+        <label className="confirmation-row"><input type="checkbox" checked={preferences.closeToTray} disabled={isPending("app", "closeToTray")} onChange={(event) => onUpdateApp({ closeToTray: event.target.checked })} />点击关闭按钮时最小化到系统托盘（关闭此开关则退出程序）</label>
+      </section>
       <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 QYReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
-      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.0"} · Qt WebEngine 桌面版</p></section>
+      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.1"} · Qt WebEngine 桌面版</p></section>
     </div></div>
   );
 }
@@ -952,7 +956,7 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.0");
+  const [appVersion, setAppVersion] = useState("2.0.1");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsPendingRef = useRef(new Set());
   const [settingsPending, setSettingsPending] = useState([]);
@@ -1139,7 +1143,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.0");
+      setAppVersion(error.initialData?.app?.version || "2.0.1");
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
     });

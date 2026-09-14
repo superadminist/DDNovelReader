@@ -347,6 +347,37 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertTrue(errors[0]["retryable"])
         self.assertEqual(errors[0]["fallback_backend"], "sapi")
 
+    def test_edge_resume_at_sentence_boundary_advances_without_waiting_for_consumed_offset(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        controller._edge_synthesize = lambda text: text.encode("utf-8")
+        played = []
+
+        def play(audio, generation, start_event=None):
+            played.append(audio.decode("utf-8"))
+            if start_event is not None:
+                controller._post(dict(start_event), generation)
+            if len(played) == 1:
+                controller.pause()
+            return True
+
+        controller._speak_edge_play = play
+        try:
+            controller.start(make_book("第一句。第二句！", ""), 0, 0)
+            deadline = time.time() + 1
+            while not controller.is_paused() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(controller.is_paused())
+
+            self.assertTrue(controller.resume())
+            self._wait_for_stop(controller)
+
+            self.assertTrue(controller.is_stopped())
+            self.assertEqual(played, ["第一句。", "第二句！"])
+        finally:
+            controller.stop()
+            controller.shutdown()
+
     def test_sapi_lifecycle_stays_on_the_worker_thread(self):
         calls = []
 

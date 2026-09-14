@@ -17,6 +17,7 @@ class AppPreferencesServiceTests(unittest.TestCase):
             self.assertEqual(state["theme"], "护眼")
             self.assertEqual(state["colorScheme"], "light")
             self.assertTrue(state["autoOpenLast"])
+            self.assertFalse(state["closeToTray"])
             self.assertEqual(state["startupBookId"], "")
             self.assertFalse(path.exists())
 
@@ -44,14 +45,18 @@ class AppPreferencesServiceTests(unittest.TestCase):
                 "books": {"book-1": {"title": "保留"}},
                 "settings": {"last_book": "book-1", "tts_rate": 260},
             }), encoding="utf-8")
-            state = AppPreferencesService(path).update({"theme": "夜间", "autoOpenLast": False})
+            state = AppPreferencesService(path).update({
+                "theme": "夜间", "autoOpenLast": False, "closeToTray": True
+            })
             self.assertEqual(state["theme"], "夜间")
             self.assertFalse(state["autoOpenLast"])
+            self.assertTrue(state["closeToTray"])
             stored = json.loads(path.read_text(encoding="utf-8"))
             self.assertIn("book-1", stored["books"])
             self.assertEqual(stored["settings"]["tts_rate"], 260)
             self.assertEqual(stored["settings"]["theme"], "夜间")
             self.assertFalse(stored["settings"]["auto_open_last"])
+            self.assertTrue(stored["settings"]["close_to_tray"])
 
     def test_invalid_or_damaged_input_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -61,7 +66,10 @@ class AppPreferencesServiceTests(unittest.TestCase):
             with self.assertRaises(AppPreferencesError):
                 service.update({"theme": "夜间"})
             self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
-            for patch in ({}, {"theme": "蓝色"}, {"autoOpenLast": 1}, {"unknown": True}):
+            for patch in (
+                {}, {"theme": "蓝色"}, {"autoOpenLast": 1},
+                {"closeToTray": 1}, {"unknown": True},
+            ):
                 with self.assertRaises(AppPreferencesError):
                     service.update(patch)
 

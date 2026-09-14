@@ -1610,9 +1610,20 @@ class SpeechController:
                     return
                 with self._cv:
                     if self._state == "paused":
-                        # 本句被打断（暂停），等恢复后重读本句，不推进进度
-                        self._cv.wait()
-                        continue
+                        self._cv.wait_for(
+                            lambda: self._state != "paused"
+                            or self._book is None
+                            or self._gen != gen
+                        )
+                        # SAPI pause stops the utterance, so it must replay the
+                        # current sentence. Edge/MCI resumes in-place; reaching
+                        # this branch means pause raced with natural sentence
+                        # completion, and replaying would wait forever for an
+                        # already-consumed prefetch offset.
+                        if backend != "edge":
+                            continue
+                if self._should_stop(gen):
+                    return
                 self._post(
                     {"type": "sentence_done", "chapter_idx": ci, "char_offset": next_orig},
                     gen,

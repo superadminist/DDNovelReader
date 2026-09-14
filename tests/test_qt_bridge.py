@@ -104,9 +104,10 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["library"]["total"], 1)
-        self.assertEqual(payload["data"]["app"]["version"], "2.0.0")
+        self.assertEqual(payload["data"]["app"]["version"], "2.0.1")
         self.assertEqual(payload["data"]["preferences"]["theme"], "护眼")
         self.assertTrue(payload["data"]["preferences"]["autoOpenLast"])
+        self.assertFalse(payload["data"]["preferences"]["closeToTray"])
         capabilities = payload["data"]["capabilities"]
         self.assertTrue(capabilities["fileImport"])
         self.assertTrue(capabilities["pasteImport"])
@@ -168,15 +169,21 @@ class DesktopBridgeTests(unittest.TestCase):
     def test_app_preferences_are_validated_persisted_and_emitted(self):
         preference_spy = QSignalSpy(self.bridge.appPreferencesChanged)
         payload = json.loads(self.bridge.updateAppPreferences(json.dumps({
-            "patch": {"theme": "夜间", "autoOpenLast": False}
+            "patch": {"theme": "夜间", "autoOpenLast": False, "closeToTray": True}
         })))
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["colorScheme"], "dark")
         self.assertFalse(payload["data"]["autoOpenLast"])
+        self.assertTrue(payload["data"]["closeToTray"])
         self.assertEqual(preference_spy.count(), 1)
         stored = json.loads((self.data_dir / "library.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["settings"]["theme"], "夜间")
         self.assertFalse(stored["settings"]["auto_open_last"])
+        self.assertTrue(stored["settings"]["close_to_tray"])
+
+        self.bridge.closeWindow()
+        self.assertTrue(self.window.minimized)
+        self.assertFalse(self.window.closed)
 
         rejected = json.loads(self.bridge.updateAppPreferences(json.dumps({
             "patch": {"theme": "蓝色"}

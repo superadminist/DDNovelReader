@@ -158,6 +158,7 @@ class DesktopBridge(QObject):
                 "theme": "护眼",
                 "colorScheme": "light",
                 "autoOpenLast": True,
+                "closeToTray": False,
                 "startupBookId": "",
             },
             "window": {
@@ -735,6 +736,13 @@ class DesktopBridge(QObject):
 
     @Slot()
     def closeWindow(self) -> None:
+        try:
+            close_to_tray = self._app.state().get("closeToTray", False)
+        except AppPreferencesError:
+            close_to_tray = False
+        if close_to_tray:
+            self.minimizeWindow()
+            return
         close = getattr(self._window, "requestApplicationExit", None)
         if callable(close):
             close()

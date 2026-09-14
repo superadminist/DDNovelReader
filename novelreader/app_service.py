@@ -40,17 +40,28 @@ class AppPreferencesService:
             theme = DEFAULT_SETTINGS["theme"]
         auto_open = settings.get("auto_open_last", DEFAULT_SETTINGS["auto_open_last"])
         auto_open = auto_open if isinstance(auto_open, bool) else DEFAULT_SETTINGS["auto_open_last"]
+        close_to_tray = settings.get("close_to_tray", DEFAULT_SETTINGS["close_to_tray"])
+        close_to_tray = (
+            close_to_tray
+            if isinstance(close_to_tray, bool)
+            else DEFAULT_SETTINGS["close_to_tray"]
+        )
         last_book = str(settings.get("last_book") or "")
         startup_book = last_book if auto_open and last_book in books else ""
         return {
             "theme": theme,
             "colorScheme": "dark" if theme == "夜间" else "light",
             "autoOpenLast": auto_open,
+            "closeToTray": close_to_tray,
             "startupBookId": startup_book,
         }
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(patch, dict) or not patch or set(patch) - {"theme", "autoOpenLast"}:
+        if (
+            not isinstance(patch, dict)
+            or not patch
+            or set(patch) - {"theme", "autoOpenLast", "closeToTray"}
+        ):
             raise AppPreferencesError("INVALID_REQUEST", "应用设置参数不正确。")
         updates: dict[str, Any] = {}
         if "theme" in patch:
@@ -63,6 +74,11 @@ class AppPreferencesService:
             if not isinstance(auto_open, bool):
                 raise AppPreferencesError("INVALID_REQUEST", "自动续读设置不正确。")
             updates["auto_open_last"] = auto_open
+        if "closeToTray" in patch:
+            close_to_tray = patch["closeToTray"]
+            if not isinstance(close_to_tray, bool):
+                raise AppPreferencesError("INVALID_REQUEST", "关闭按钮设置不正确。")
+            updates["close_to_tray"] = close_to_tray
 
         with library_write_lock(self.library_path):
             payload = self._load()

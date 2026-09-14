@@ -192,15 +192,19 @@ test("native application preferences preserve legacy themes and validate events"
   connection.onAppPreferencesChanged((preferences) => events.push(preferences));
   connection.onBridgeError((raw) => errors.push(JSON.parse(raw)));
 
-  const updated = await connection.app.updatePreferences({ patch: { theme: "夜间", autoOpenLast: false } });
+  const updated = await connection.app.updatePreferences({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true } });
   assert.equal(updated.data.colorScheme, "dark");
-  assert.deepEqual(env.calls, [["updateAppPreferences", JSON.stringify({ patch: { theme: "夜间", autoOpenLast: false } })]]);
+  assert.deepEqual(env.calls, [["updateAppPreferences", JSON.stringify({ patch: { theme: "夜间", autoOpenLast: false, closeToTray: true } })]]);
   env.nativeBridge.appPreferencesChanged.emit(JSON.stringify(updated.data));
   env.nativeBridge.appPreferencesChanged.emit(JSON.stringify({ ...updated.data, colorScheme: "light" }));
   assert.equal(events.length, 1);
   assert.equal(errors.at(-1).code, "BRIDGE_INVALID_PAYLOAD");
   await assert.rejects(
     connection.app.updatePreferences({ patch: { theme: "蓝色" } }),
+    (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
+  );
+  await assert.rejects(
+    connection.app.updatePreferences({ patch: { closeToTray: "yes" } }),
     (error) => error instanceof BridgeProtocolError && error.code === "BRIDGE_INVALID_ARGUMENT",
   );
   connection.dispose();
@@ -576,6 +580,17 @@ test("floating body keeps scrolling capability while hiding Chromium scrollbars"
   assert.match(css, /\.native-floating-surface \.floating-content::\-webkit\-scrollbar \{[^}]*display: none;/s);
   assert.match(css, /\.mac-window \{[^}]*background: #f7f9fc;/s);
   assert.match(css, /\.mac-titlebar \{[^}]*background: #f4f7fb;/s);
+});
+
+test("settings modal avoids the Qt WebEngine full-window backdrop filter flicker path", async () => {
+  const [css, app] = await Promise.all([
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/App.jsx", import.meta.url), "utf8"),
+  ]);
+  const modalBackdrop = css.match(/\.modal-backdrop \{([^}]*)\}/)?.[1] || "";
+  assert.doesNotMatch(modalBackdrop, /backdrop-filter/);
+  assert.match(app, /preferences\.closeToTray/);
+  assert.match(app, /点击关闭按钮时最小化到系统托盘/);
 });
 
 test("native window surfaces keep anti-aliased corner pixels inside the viewport", async () => {

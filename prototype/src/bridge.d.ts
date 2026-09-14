@@ -33,6 +33,7 @@ export interface AppPreferences {
   theme: AppTheme;
   colorScheme: "light" | "dark";
   autoOpenLast: boolean;
+  closeToTray: boolean;
   startupBookId: string;
 }
 
@@ -453,7 +454,7 @@ export interface FloatingReaderControls {
 
 export interface AppControls {
   updatePreferences(input: {
-    patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast">>;
+    patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast" | "closeToTray">>;
   }): Promise<BridgeResponse<AppPreferences>>;
 }
 
