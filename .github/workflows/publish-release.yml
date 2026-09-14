@@ -1,0 +1,71 @@
+name: Publish Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
+      run_id:
+        description: Successful Windows installer workflow run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Download and verify Windows artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          $run = gh run view $env:SOURCE_RUN_ID --repo $env:GITHUB_REPOSITORY --json conclusion,headSha | ConvertFrom-Json
+          if ($run.conclusion -ne "success") { throw "Source workflow run did not succeed" }
+
+          $tagCommit = git rev-list -n 1 HEAD
+          if ($run.headSha -ne $tagCommit) { throw "Source workflow run does not match the release tag" }
+
+          $assetRoot = Join-Path $env:RUNNER_TEMP "release-assets"
+          gh run download $env:SOURCE_RUN_ID --repo $env:GITHUB_REPOSITORY --dir $assetRoot
+
+          $installer = Get-ChildItem -LiteralPath $assetRoot -Recurse -Filter "QYReader-Setup-*.exe" | Select-Object -First 1
+          $checksumFile = Get-ChildItem -LiteralPath $assetRoot -Recurse -Filter "SHA256SUMS.txt" | Select-Object -First 1
+          if (-not $installer -or -not $checksumFile) { throw "Release assets were not found" }
+
+          $checksumLine = (Get-Content -LiteralPath $checksumFile.FullName -Raw).Trim()
+          if ($checksumLine -notmatch '^([0-9A-Fa-f]{64}) \*(.+\.exe)$') { throw "Unexpected checksum file format" }
+          if ($Matches[2] -ne $installer.Name) { throw "Checksum filename does not match the installer" }
+
+          $expectedHash = $Matches[1].ToUpperInvariant()
+          $actualHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+          if ($actualHash -ne $expectedHash) { throw "Installer SHA256 verification failed" }
+
+          "installer=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "checksum=$($checksumFile.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: assets
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          INSTALLER_PATH: ${{ steps.assets.outputs.installer }}
+          CHECKSUM_PATH: ${{ steps.assets.outputs.checksum }}
+        run: |
+          gh release upload $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --clobber
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
