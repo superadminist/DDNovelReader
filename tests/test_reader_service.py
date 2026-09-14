@@ -293,6 +293,32 @@ class ReaderServiceTests(unittest.TestCase):
         self.assertTrue(removed["removed"])
         self.assertEqual(service.list_bookmarks(session_id)["total"], 0)
 
+    def test_global_speech_settings_work_without_an_open_book(self):
+        service = ReaderService(self.library_path)
+        updated = service.update_global_settings({
+            "ttsVoiceId": "zh-CN-XiaoxiaoNeural",
+            "ttsRate": 280,
+            "sentenceGapSeconds": 0.35,
+        })
+        self.assertEqual(updated["ttsVoiceId"], "zh-CN-XiaoxiaoNeural")
+        self.assertEqual(updated["ttsRate"], 280)
+        self.assertEqual(updated["sentenceGapSeconds"], 0.35)
+        self.assertEqual(ReaderService(self.library_path).settings_state()["ttsRate"], 280)
+
+    def test_global_settings_create_a_fresh_library_but_fail_closed_when_damaged(self):
+        fresh_path = self.root / "fresh" / "library.json"
+        service = ReaderService(fresh_path)
+        self.assertEqual(service.settings_state()["ttsRate"], 200)
+        service.update_global_settings({"ttsRate": 240})
+        self.assertEqual(Storage(os.fspath(fresh_path)).get_setting("tts_rate"), 240)
+
+        original = b"{damaged"
+        fresh_path.write_bytes(original)
+        with self.assertRaises(ReaderServiceError) as caught:
+            service.update_global_settings({"ttsRate": 260})
+        self.assertEqual(caught.exception.code, "LIBRARY_INVALID")
+        self.assertEqual(fresh_path.read_bytes(), original)
+
     def test_damaged_library_fails_closed_without_rewrite(self):
         original = b"{damaged"
         self.library_path.write_bytes(original)

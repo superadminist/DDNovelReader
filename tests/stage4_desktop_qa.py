@@ -18,6 +18,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import psutil
+
 ROOT = Path(__file__).resolve().parents[1]
 if os.fspath(ROOT) not in sys.path:
     sys.path.insert(0, os.fspath(ROOT))
@@ -108,9 +110,40 @@ def _wait_for_no_children(before: set[int], timeout: float = 7.0) -> None:
     raise AssertionError(f"QtWebEngine child processes remain: {sorted(remaining)}")
 
 
+def _resolve_window_host_pid(process: subprocess.Popen, window_probe: Path, timeout: float = 12.0) -> int:
+    """Follow the Windows venv launcher to the Python process that owns Qt windows."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and process.poll() is None:
+        candidates = [process.pid]
+        try:
+            candidates.extend(child.pid for child in psutil.Process(process.pid).children(recursive=True))
+        except (psutil.Error, OSError):
+            pass
+        for candidate in dict.fromkeys(candidates):
+            result = subprocess.run(
+                [sys.executable, os.fspath(window_probe), "snapshot", str(candidate)],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode:
+                continue
+            try:
+                windows = json.loads(result.stdout).get("windows", [])
+            except json.JSONDecodeError:
+                continue
+            if any(item.get("title") == "多多朗读" for item in windows):
+                return candidate
+        time.sleep(0.1)
+    raise RuntimeError("Unable to locate the Python process that owns the Qt main window")
+
+
 def _run_phase(
     *,
     node: str,
+    app_executable: str,
     data_root: Path,
     screenshot_dir: Path,
     checkpoint: Path,
@@ -123,7 +156,11 @@ def _run_phase(
     environment.update({
         "DOUBAO_NOVEL_DATA": os.fspath(data_root),
         "QTWEBENGINE_REMOTE_DEBUGGING": str(port),
-        "QTWEBENGINE_CHROMIUM_FLAGS": "--remote-allow-origins=*",
+        # This runner executes inside an isolated desktop whose shared GPU
+        # context is unavailable. Keeping WebEngine in the QA host process
+        # makes the real-window visual gate deterministic; production builds
+        # intentionally do not use this diagnostic Chromium switch.
+        "QTWEBENGINE_CHROMIUM_FLAGS": "--remote-allow-origins=* --single-process",
         "QT_SCALE_FACTOR": str(scale),
         "QT_AUTO_SCREEN_SCALE_FACTOR": "0",
         "DD_QA_CDP_PORT": str(port),
@@ -137,7 +174,7 @@ def _run_phase(
         "DD_QA_WINDOW_PROBE": os.fspath(ROOT / "tests" / "stage4_window_probe.py"),
     })
     process = subprocess.Popen(
-        [sys.executable, "-m", "novelreader.qt_main"],
+        [app_executable] if app_executable else [sys.executable, "-m", "novelreader.qt_main"],
         cwd=ROOT,
         env=environment,
         stdout=subprocess.PIPE,
@@ -146,9 +183,13 @@ def _run_phase(
         encoding="utf-8",
         errors="replace",
     )
-    environment["DD_QA_HOST_PID"] = str(process.pid)
+    host_pid = process.pid
     host_output = ""
     try:
+        host_pid = _resolve_window_host_pid(
+            process, ROOT / "tests" / "stage4_window_probe.py", timeout=30.0
+        )
+        environment["DD_QA_HOST_PID"] = str(host_pid)
         driven = subprocess.run(
             [node, os.fspath(ROOT / "prototype" / "tests" / "stage4-qt-cdp.mjs")],
             cwd=ROOT,
@@ -175,6 +216,18 @@ def _run_phase(
             raise AssertionError("CDP driver did not create the stage-4 checkpoint")
         return json.loads(checkpoint.read_text(encoding="utf-8"))
     finally:
+        if host_pid != process.pid:
+            try:
+                host_process = psutil.Process(host_pid)
+                if host_process.is_running():
+                    host_process.terminate()
+                    try:
+                        host_process.wait(timeout=5)
+                    except psutil.TimeoutExpired:
+                        host_process.kill()
+                        host_process.wait(timeout=5)
+            except psutil.NoSuchProcess:
+                pass
         if process.poll() is None:
             process.terminate()
             try:
@@ -192,6 +245,7 @@ def _run_phase(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--node", required=True, help="Node 20+ executable")
+    parser.add_argument("--app-executable", default="", help="optional packaged one-file executable")
     parser.add_argument("--screenshot-dir", required=True, help="output directory outside the repository")
     parser.add_argument(
         "--dpi",
@@ -230,6 +284,7 @@ def main() -> int:
         checkpoint = temporary_root / "stage4-checkpoint.json"
         primary = _run_phase(
             node=args.node,
+            app_executable=args.app_executable,
             data_root=data_root,
             screenshot_dir=screenshot_dir,
             checkpoint=checkpoint,
@@ -245,6 +300,7 @@ def main() -> int:
 
         restored = _run_phase(
             node=args.node,
+            app_executable=args.app_executable,
             data_root=data_root,
             screenshot_dir=screenshot_dir,
             checkpoint=checkpoint,
@@ -261,6 +317,7 @@ def main() -> int:
         for scale in scales[1:]:
             dpi_results.append(_run_phase(
                 node=args.node,
+                app_executable=args.app_executable,
                 data_root=data_root,
                 screenshot_dir=screenshot_dir,
                 checkpoint=checkpoint,

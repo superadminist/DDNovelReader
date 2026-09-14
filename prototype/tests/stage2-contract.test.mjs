@@ -254,7 +254,7 @@ test("cancelled job event is observable without fabricating an open target", asy
 test("malformed import response is rejected before application code receives it", async () => {
   const env = nativeEnvironment({
     selectImportFiles(callback) {
-      callback(JSON.stringify({ ...selectedTxt(), schemaVersion: 2 }));
+      callback(JSON.stringify({ ...selectedTxt(), schemaVersion: 3 }));
     },
   });
   const { connection } = await connectionFor(env);

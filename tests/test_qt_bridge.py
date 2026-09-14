@@ -99,7 +99,7 @@ class DesktopBridgeTests(unittest.TestCase):
             file_picker=lambda: [os.fspath(self.source)],
         )
 
-    def test_initial_state_uses_schema_v1_and_current_capabilities(self):
+    def test_initial_state_uses_schema_v2_and_current_capabilities(self):
         payload = json.loads(self.bridge.getInitialState())
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
@@ -127,6 +127,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertIn("importFinished(QString)", signatures)
         self.assertIn("updateAppPreferences(QString)", signatures)
         self.assertIn("appPreferencesChanged(QString)", signatures)
+        self.assertIn("updateSpeechPreferences(QString)", signatures)
+        self.assertIn("speechPreferencesChanged(QString)", signatures)
+        self.assertIn("floatingPointerChanged(bool)", signatures)
         self.assertIn("toggleFullscreen()", signatures)
 
     def test_library_error_is_a_safe_failure_envelope(self):

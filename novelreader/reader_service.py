@@ -222,21 +222,49 @@ class ReaderService:
         updates = self._validated_settings_patch(patch)
         with self._session_lock:
             session = self._require_session(session_id)
-            with library_write_lock(self.library_path):
-                self._validate_library()
-                storage = Storage(os.fspath(self.library_path))
-                settings = storage.settings()
-                settings.update(updates)
-                try:
-                    storage.save()
-                except Exception as exc:
-                    raise ReaderServiceError(
-                        "LIBRARY_WRITE_FAILED",
-                        "无法保存阅读设置，请检查数据目录是否可写。",
-                        retryable=True,
-                    ) from exc
+            settings = self._persist_settings(updates)
             session.settings = self._reader_settings(settings)
             return dict(session.settings)
+
+    def settings_state(self) -> dict[str, Any]:
+        """Return global reader/TTS preferences without requiring an open book."""
+        with self._session_lock:
+            if self._session is not None:
+                return dict(self._session.settings)
+            if not self.library_path.exists():
+                return self._reader_settings({})
+            self._validate_library()
+            storage = Storage(os.fspath(self.library_path))
+            return self._reader_settings(storage.settings())
+
+    def update_global_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Persist global preferences and synchronize the active reader session."""
+        updates = self._validated_settings_patch(patch)
+        with self._session_lock:
+            settings = self._persist_settings(updates)
+            normalized = self._reader_settings(settings)
+            if self._session is not None:
+                self._session.settings = dict(normalized)
+            return normalized
+
+    def _persist_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        with library_write_lock(self.library_path):
+            if self.library_path.exists():
+                self._validate_library()
+            else:
+                self.library_path.parent.mkdir(parents=True, exist_ok=True)
+            storage = Storage(os.fspath(self.library_path))
+            settings = storage.settings()
+            settings.update(updates)
+            try:
+                storage.save()
+            except Exception as exc:
+                raise ReaderServiceError(
+                    "LIBRARY_WRITE_FAILED",
+                    "无法保存阅读设置，请检查数据目录是否可写。",
+                    retryable=True,
+                ) from exc
+            return dict(settings)
 
     def get_session_content(self, session_id: str) -> book_loader.BookContent:
         """Return a detached content snapshot for trusted backend consumers such as TTS."""

@@ -24,7 +24,7 @@ from .reader_service import ReaderService, ReaderServiceError
 from .tts_engine import SpeechController
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CAPABILITIES = {
     "fileImport": True,
@@ -92,7 +92,9 @@ class DesktopBridge(QObject):
     readerSearchFinished = Signal(str)
     readerPlaybackChanged = Signal(str)
     floatingReaderChanged = Signal(str)
+    floatingPointerChanged = Signal(bool)
     appPreferencesChanged = Signal(str)
+    speechPreferencesChanged = Signal(str)
 
     def __init__(
         self,
@@ -133,6 +135,15 @@ class DesktopBridge(QObject):
         self._reader_timer.setInterval(25)
         self._reader_timer.timeout.connect(self._drain_reader_events)
         self._reader_timer.start()
+        self._voice_options = self._edge_voice_options()
+        self._local_voices_loading = True
+        self._local_voice_error = ""
+        self._voice_thread = threading.Thread(
+            target=self._enumerate_local_voices,
+            name="dd-local-voices",
+            daemon=True,
+        )
+        self._voice_thread.start()
         self._shutdown = False
 
     def _state_data(
@@ -149,7 +160,13 @@ class DesktopBridge(QObject):
                 "autoOpenLast": True,
                 "startupBookId": "",
             },
-            "window": {"isMaximized": bool(self._window.isMaximized())},
+            "window": {
+                "isMaximized": bool(self._window.isMaximized()),
+                "isFullScreen": bool(
+                    getattr(self._window, "isFullScreen", lambda: False)()
+                ),
+            },
+            "speech": self._speech_state(),
             "capabilities": dict(CAPABILITIES),
         }
 
@@ -537,9 +554,51 @@ class DesktopBridge(QObject):
         try:
             data = self._reader.update_settings(request.get("sessionId"), request.get("patch"))
             self._apply_speech_settings(data)
+            prepare_current = getattr(self._playback, "prepare_current", None)
+            if callable(prepare_current):
+                prepare_current()
+            patch = request.get("patch")
+            if isinstance(patch, dict) and "fontSize" in patch:
+                floating = self._floating.state()["settings"]
+                if floating.get("followReaderFont"):
+                    state = self._floating.update_settings({"fontSize": data["fontSize"]})
+                    self._emit_floating_state_if_visible()
             return self._ok_response(data)
         except Exception as exc:
             return self._reader_error_response(empty, exc)
+
+    @Slot(str, result=str)
+    def updateSpeechPreferences(self, request_json: str) -> str:
+        request = self._request_object(request_json)
+        if request is None:
+            return self._error_response(
+                self._speech_state(),
+                "INVALID_REQUEST",
+                "朗读设置请求格式不正确。",
+            )
+        patch = request.get("patch")
+        if not isinstance(patch, dict) or not patch or set(patch) - {
+            "ttsVoiceId", "ttsRate", "sentenceGapSeconds"
+        }:
+            return self._error_response(
+                self._speech_state(),
+                "INVALID_REQUEST",
+                "朗读设置参数不正确。",
+            )
+        try:
+            settings = self._reader.update_global_settings(patch)
+            self._apply_speech_settings(settings)
+            prepare_current = getattr(self._playback, "prepare_current", None)
+            if callable(prepare_current):
+                prepare_current()
+            state = self._speech_state(settings)
+            self.speechPreferencesChanged.emit(_json({
+                "schemaVersion": SCHEMA_VERSION,
+                "state": state,
+            }))
+            return self._ok_response(state)
+        except Exception as exc:
+            return self._reader_error_response(self._speech_state(), exc)
 
     @Slot(result=str)
     def getFloatingReaderState(self) -> str:
@@ -584,7 +643,11 @@ class DesktopBridge(QObject):
                 "悬浮窗设置请求格式不正确。",
             )
         try:
-            state = self._floating.update_settings(request.get("patch"))
+            patch = request.get("patch")
+            if isinstance(patch, dict) and patch.get("followReaderFont") is True:
+                patch = dict(patch)
+                patch["fontSize"] = self._reader.settings_state()["fontSize"]
+            state = self._floating.update_settings(patch)
             apply_settings = getattr(self._window, "applyFloatingReaderSettings", None)
             if callable(apply_settings):
                 apply_settings(state["settings"])
@@ -647,7 +710,11 @@ class DesktopBridge(QObject):
 
     @Slot()
     def minimizeWindow(self) -> None:
-        self._window.showMinimized()
+        minimize = getattr(self._window, "minimizeToTray", None)
+        if callable(minimize):
+            minimize()
+        else:
+            self._window.showMinimized()
 
     @Slot()
     def toggleMaximizeWindow(self) -> None:
@@ -668,7 +735,11 @@ class DesktopBridge(QObject):
 
     @Slot()
     def closeWindow(self) -> None:
-        self._window.close()
+        close = getattr(self._window, "requestApplicationExit", None)
+        if callable(close):
+            close()
+        else:
+            self._window.close()
 
     @Slot()
     def startWindowMove(self) -> None:
@@ -690,6 +761,9 @@ class DesktopBridge(QObject):
         self.windowStateChanged.emit(_json({
             "schemaVersion": SCHEMA_VERSION,
             "isMaximized": bool(self._window.isMaximized()),
+            "isFullScreen": bool(
+                getattr(self._window, "isFullScreen", lambda: False)()
+            ),
         }))
 
     def shutdownImports(self) -> None:
@@ -710,7 +784,12 @@ class DesktopBridge(QObject):
         if callable(shutdown_floating):
             shutdown_floating()
         deadline = time.monotonic() + 2.0
-        for thread in (self._import_thread, self._reader_thread, self._search_thread):
+        for thread in (
+            self._import_thread,
+            self._reader_thread,
+            self._search_thread,
+            self._voice_thread,
+        ):
             if thread is not None and thread.is_alive():
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._playback.shutdown(2.0)
@@ -815,6 +894,20 @@ class DesktopBridge(QObject):
                 if payload.get("requestId") == self._reader_open_request_id:
                     self._reader_open_request_id = ""
                     self._reader_thread = None
+                opened_data = payload.get("data") if payload.get("ok") else None
+                opened_settings = opened_data.get("settings") if isinstance(opened_data, dict) else None
+                floating_settings = self._floating.state()["settings"]
+                if (
+                    isinstance(opened_settings, dict)
+                    and floating_settings.get("followReaderFont")
+                    and opened_settings.get("fontSize") != floating_settings.get("fontSize")
+                ):
+                    floating_state = self._floating.update_settings({
+                        "fontSize": opened_settings["fontSize"]
+                    })
+                    apply_settings = getattr(self._window, "applyFloatingReaderSettings", None)
+                    if callable(apply_settings):
+                        apply_settings(floating_state["settings"])
                 self.readerOpened.emit(_json(payload))
                 self._emit_floating_state_if_visible()
             elif event_type == "search":
@@ -823,6 +916,14 @@ class DesktopBridge(QObject):
                     self._search_cancel = None
                     self._search_request_id = ""
                 self.readerSearchFinished.emit(_json(payload))
+            elif event_type == "voices":
+                self._voice_options = payload["voices"]
+                self._local_voices_loading = False
+                self._local_voice_error = payload["error"]
+                self.speechPreferencesChanged.emit(_json({
+                    "schemaVersion": SCHEMA_VERSION,
+                    "state": self._speech_state(),
+                }))
 
         try:
             events = self._playback.drain_events()
@@ -939,6 +1040,66 @@ class DesktopBridge(QObject):
         speech.set_rate(settings.get("ttsRate", 200))
         speech.set_sentence_gap(settings.get("sentenceGapSeconds", 0.1))
         speech.set_volume(settings.get("volume", 100))
+
+    def _speech_state(self, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+        if settings is None:
+            getter = getattr(self._reader, "settings_state", None)
+            if callable(getter):
+                try:
+                    settings = getter()
+                except ReaderServiceError:
+                    settings = None
+        if settings is None:
+            settings = {
+                "ttsVoiceId": "",
+                "ttsRate": 200,
+                "sentenceGapSeconds": 0.1,
+            }
+        return {
+            "settings": {
+                "ttsVoiceId": str(settings.get("ttsVoiceId") or ""),
+                "ttsRate": int(settings.get("ttsRate", 200)),
+                "sentenceGapSeconds": float(settings.get("sentenceGapSeconds", 0.1)),
+            },
+            "voices": [dict(option) for option in self._voice_options],
+            "loadingLocalVoices": self._local_voices_loading,
+            "localVoiceError": self._local_voice_error,
+        }
+
+    @staticmethod
+    def _edge_voice_options() -> list[dict[str, Any]]:
+        options = [{
+            "id": "",
+            "label": "系统默认音色",
+            "backend": "sapi",
+            "requiresNetwork": False,
+        }]
+        options.extend({
+            "id": voice_id,
+            "label": label,
+            "backend": "edge",
+            "requiresNetwork": True,
+        } for voice_id, label in SpeechController.list_edge_voices())
+        return options
+
+    def _enumerate_local_voices(self) -> None:
+        try:
+            local_ids = SpeechController.list_voices()
+            local_options = [{
+                "id": voice_id,
+                "label": voice_id.rsplit("\\", 1)[-1] or voice_id,
+                "backend": "sapi",
+                "requiresNetwork": False,
+            } for voice_id in local_ids]
+            error = "" if local_ids else "当前环境未发现可用的本地系统音色。"
+        except Exception:
+            LOGGER.exception("Unable to enumerate local SAPI voices")
+            local_options = []
+            error = "本地系统音色读取失败，可继续使用 Edge 音色。"
+        self._reader_events.put(("voices", {
+            "voices": self._edge_voice_options() + local_options,
+            "error": error,
+        }))
 
     def _emit_error(self, code: str, message: str) -> None:
         self.bridgeError.emit(_json({

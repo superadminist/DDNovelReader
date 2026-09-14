@@ -14,7 +14,7 @@ from collections import deque
 from .textproc import clean_to_orig
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PLAYBACK_COMMANDS = frozenset(
     {"play", "pause", "stop", "previousSentence", "nextSentence"}
 )
@@ -82,6 +82,7 @@ class PlaybackService:
             self._terminal_generation = None
             self._pending_events.clear()
             self._speech.set_book_id(self._book_id)
+            self._prepare_position()
             return self.snapshot()
 
     def set_position(self, chapter_index, char_offset, restart_playing=False):
@@ -110,6 +111,8 @@ class PlaybackService:
                 self._status = "idle"
                 self._active_backend = None
                 self._fallback_active = False
+            if self._status != "playing":
+                self._prepare_position()
             return self._position()
 
     def control(self, command, command_id=None, session_id=None):
@@ -144,6 +147,12 @@ class PlaybackService:
                 "fallbackActive": self._fallback_active,
             }
 
+    def prepare_current(self):
+        """Warm the bound position without creating another playback state."""
+        with self._lock:
+            if self._book is not None and self._status != "playing":
+                self._prepare_position()
+
     def floating_context(self):
         """Return the adjacent three-sentence view without eagerly scanning text.
 
@@ -172,10 +181,20 @@ class PlaybackService:
                     "current": None,
                     "next": None,
                 }
+            anchor_offset = self._char_offset
+            if (
+                self._sentence is not None
+                and self._sentence.get("chapterIndex") == chapter_index
+            ):
+                # ``sentenceDone`` advances persisted progress before the next
+                # audio sentence starts.  Keep the visible lyric anchored to
+                # the sentence that is still on screen until ``sentenceStart``
+                # selects its successor.
+                anchor_offset = self._sentence.get("startOffset", anchor_offset)
             starts = [entry[0] for entry in entries]
             current_index = max(
                 0,
-                min(len(entries) - 1, bisect.bisect_right(starts, self._char_offset) - 1),
+                min(len(entries) - 1, bisect.bisect_right(starts, anchor_offset) - 1),
             )
             current = self._sentence_payload(chapter_index, entries[current_index])
             return {
@@ -226,6 +245,11 @@ class PlaybackService:
         self._active_backend = self._speech.backend()
         self._queue_event("state")
         return True
+
+    def _prepare_position(self):
+        prepare = getattr(self._speech, "prepare", None)
+        if callable(prepare):
+            prepare(self._book, self._chapter_index, self._char_offset)
 
     def _pause(self):
         if self._status != "playing" or not self._speech.pause():

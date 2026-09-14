@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject
 
@@ -13,9 +15,13 @@ class _Window(QObject):
     def isMaximized(self):
         return False
 
+    def isFullScreen(self):
+        return False
+
 
 class _Library:
-    path = "unused-library.json"
+    def __init__(self, path):
+        self.path = path
 
     def load_library(self):
         return {"books": [], "total": 0}
@@ -82,6 +88,9 @@ class _Playback:
 
 class _Reader:
     session_id = "session-1"
+
+    def __init__(self):
+        self.global_settings = self._settings()
 
     @staticmethod
     def _position():
@@ -179,7 +188,15 @@ class _Reader:
     def update_settings(self, session_id, patch):
         settings = self._settings()
         settings.update(patch)
+        self.global_settings = settings
         return settings
+
+    def settings_state(self):
+        return dict(self.global_settings)
+
+    def update_global_settings(self, patch):
+        self.global_settings.update(patch)
+        return dict(self.global_settings)
 
 
 class Stage3QtBridgeTests(unittest.TestCase):
@@ -188,16 +205,18 @@ class Stage3QtBridgeTests(unittest.TestCase):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
         self.playback = _Playback()
         self.bridge = DesktopBridge(
             _Window(),
-            library=_Library(),
+            library=_Library(Path(self.temp_dir.name) / "library.json"),
             reader=_Reader(),
             playback=self.playback,
         )
 
     def tearDown(self):
         self.bridge.shutdown()
+        self.temp_dir.cleanup()
 
     @staticmethod
     def _data(raw):
@@ -227,6 +246,7 @@ class Stage3QtBridgeTests(unittest.TestCase):
             "removeReaderBookmark(QString)",
             "controlReaderPlayback(QString)",
             "updateReaderSettings(QString)",
+            "updateSpeechPreferences(QString)",
             "getFloatingReaderState()",
             "showFloatingReader()",
             "closeFloatingReader()",
@@ -263,7 +283,7 @@ class Stage3QtBridgeTests(unittest.TestCase):
         self.assertEqual(searched[0]["data"]["query"], "真实")
 
         self.playback.events.append({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "sessionId": "session-1",
             "bookId": "book-1",
             "sequence": 1,
@@ -308,6 +328,21 @@ class Stage3QtBridgeTests(unittest.TestCase):
         })))
         self.assertEqual(settings["fontSize"], 20)
         self.assertEqual(self.playback.speech_controller.values["volume"], 60)
+
+    def test_speech_settings_are_available_without_open_book_and_apply_live(self):
+        state = self._data(self.bridge.getInitialState())
+        edge_voices = [voice for voice in state["speech"]["voices"] if voice["backend"] == "edge"]
+        self.assertEqual(len(edge_voices), 9)
+        updated = self._data(self.bridge.updateSpeechPreferences(json.dumps({
+            "patch": {
+                "ttsVoiceId": "zh-CN-YunxiNeural",
+                "ttsRate": 260,
+                "sentenceGapSeconds": 0.25,
+            }
+        })))
+        self.assertEqual(updated["settings"]["ttsRate"], 260)
+        self.assertEqual(self.playback.speech_controller.values["voice"], "zh-CN-YunxiNeural")
+        self.assertEqual(self.playback.speech_controller.values["gap"], 0.25)
 
 
 if __name__ == "__main__":

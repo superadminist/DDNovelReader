@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION: 1;
+export const SCHEMA_VERSION: 2;
 
 export interface BridgeError {
   code: string;
@@ -7,7 +7,7 @@ export interface BridgeError {
 }
 
 export interface BridgeResponse<T> {
-  schemaVersion: 1;
+  schemaVersion: 2;
   ok: boolean;
   data: T;
   error: BridgeError | null;
@@ -36,11 +36,32 @@ export interface AppPreferences {
   startupBookId: string;
 }
 
+export interface SpeechVoiceOption {
+  id: string;
+  label: string;
+  backend: "sapi" | "edge";
+  requiresNetwork: boolean;
+}
+
+export interface SpeechPreferences {
+  ttsVoiceId: string;
+  ttsRate: number;
+  sentenceGapSeconds: number;
+}
+
+export interface SpeechState {
+  settings: SpeechPreferences;
+  voices: SpeechVoiceOption[];
+  loadingLocalVoices: boolean;
+  localVoiceError: string;
+}
+
 export interface InitialStateData {
   app: { version: string };
   library: { books: BookSummary[]; total: number };
   preferences: AppPreferences;
-  window: { isMaximized: boolean };
+  window: { isMaximized: boolean; isFullScreen: boolean };
+  speech: SpeechState;
   capabilities: {
     fileImport: boolean;
     pasteImport: boolean;
@@ -53,7 +74,7 @@ export interface InitialStateData {
 }
 
 export interface InitialStateResponse {
-  schemaVersion: 1;
+  schemaVersion: 2;
   ok: boolean;
   data: InitialStateData;
   error: BridgeError | null;
@@ -95,7 +116,7 @@ export interface ImportCancelData {
 }
 
 export interface ImportProgressEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   jobId: string;
   phase: "item";
   completed: number;
@@ -119,7 +140,7 @@ export interface ImportResultItem {
 }
 
 export interface ImportFinishedEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   jobId: string;
   state: "completed" | "cancelled";
   total: number;
@@ -234,7 +255,7 @@ export interface ReaderOpenStartData {
 }
 
 export interface ReaderOpenedEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   requestId: string;
   bookId: string;
   ok: boolean;
@@ -280,7 +301,7 @@ export interface ReaderSearchStartData {
 }
 
 export interface ReaderSearchFinishedEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   requestId: string;
   sessionId: string;
   ok: boolean;
@@ -318,7 +339,7 @@ export interface ReaderPlaybackCommandData {
 }
 
 export interface ReaderPlaybackEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sessionId: string;
   bookId: string;
   sequence: number;
@@ -339,11 +360,13 @@ export type FloatingReaderBackground = "light" | "sepia" | "dark";
 export interface FloatingReaderSettings {
   geometry: string;
   topmost: boolean;
-  opacity: number;
+  backgroundOpacity: number;
   fontSize: number;
   followReaderFont: boolean;
   background: FloatingReaderBackground;
   bilingual: boolean;
+  textColor: "auto" | `#${string}`;
+  hoverDisplayEnabled: boolean;
 }
 
 export interface FloatingReaderContext {
@@ -364,7 +387,7 @@ export interface FloatingReaderState {
 }
 
 export interface FloatingReaderChangedEvent {
-  schemaVersion: 1;
+  schemaVersion: 2;
   state: FloatingReaderState;
 }
 
@@ -421,7 +444,7 @@ export interface FloatingReaderControls {
   updateSettings(input: {
     patch: Partial<Pick<
       FloatingReaderSettings,
-      "topmost" | "opacity" | "fontSize" | "followReaderFont" | "background" | "bilingual"
+      "topmost" | "backgroundOpacity" | "fontSize" | "followReaderFont" | "background" | "bilingual" | "textColor" | "hoverDisplayEnabled"
     >>;
   }): Promise<BridgeResponse<FloatingReaderState>>;
   startWindowMove(): void;
@@ -432,6 +455,12 @@ export interface AppControls {
   updatePreferences(input: {
     patch: Partial<Pick<AppPreferences, "theme" | "autoOpenLast">>;
   }): Promise<BridgeResponse<AppPreferences>>;
+}
+
+export interface SpeechControls {
+  updatePreferences(input: {
+    patch: Partial<SpeechPreferences>;
+  }): Promise<BridgeResponse<SpeechState>>;
 }
 
 export interface WindowControls {
@@ -448,18 +477,21 @@ export interface BridgeConnection {
   initialState: InitialStateResponse;
   controls: WindowControls;
   app: AppControls;
+  speech: SpeechControls;
   imports: ImportControls;
   reader: ReaderControls;
   floating: FloatingReaderControls;
   onBridgeError(callback: (payload: string) => void): void;
-  onWindowStateChanged(callback: (payload: string) => void): void;
+  onWindowStateChanged(callback: (state: { isMaximized: boolean; isFullScreen: boolean }) => void): void;
   onAppPreferencesChanged(callback: (preferences: AppPreferences) => void): void;
+  onSpeechPreferencesChanged(callback: (speech: SpeechState) => void): void;
   onImportProgress(callback: (event: ImportProgressEvent) => void): void;
   onImportFinished(callback: (event: ImportFinishedEvent) => void): void;
   onReaderOpened(callback: (event: ReaderOpenedEvent) => void): void;
   onReaderSearchFinished(callback: (event: ReaderSearchFinishedEvent) => void): void;
   onReaderPlaybackChanged(callback: (event: ReaderPlaybackEvent) => void): void;
   onFloatingReaderChanged(callback: (event: FloatingReaderChangedEvent) => void): void;
+  onFloatingPointerChanged(callback: (inside: boolean) => void): void;
   dispose(): void;
 }
 

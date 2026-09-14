@@ -5,8 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from PySide6.QtCore import QCoreApplication, QObject, QRect
+from PySide6.QtCore import QCoreApplication, QObject, QPoint, QRect, Qt
 
 from novelreader.floating_reader_service import (
     FloatingReaderError,
@@ -14,7 +15,12 @@ from novelreader.floating_reader_service import (
 )
 from novelreader.qt_bridge import DesktopBridge
 from novelreader.qt_host import (
+    DesktopWindow,
     FloatingReaderWindow,
+    _apply_window_corners,
+    _configure_floating_web_view,
+    _configure_main_web_view,
+    _rounded_window_region,
     clamp_floating_geometry,
     floating_frontend_url,
     qt_geometry_string,
@@ -76,7 +82,9 @@ class _Library:
 
 
 class _Reader:
-    pass
+    @staticmethod
+    def settings_state():
+        return {"fontSize": 31}
 
 
 class _Handle:
@@ -157,6 +165,65 @@ class _FloatingGeometryHarness:
 
 
 class Stage4FloatingServiceTests(unittest.TestCase):
+    def test_main_and_floating_web_views_use_separate_composition_paths(self):
+        class View:
+            def __init__(self):
+                self.name = ""
+                self.attributes = []
+                self.style = ""
+
+            def setObjectName(self, name):
+                self.name = name
+
+            def setAttribute(self, attribute, enabled):
+                self.attributes.append((attribute, enabled))
+
+            def setStyleSheet(self, style):
+                self.style = style
+
+        class Page:
+            def setBackgroundColor(self, color):
+                self.color = color
+
+        main_view, main_page = View(), Page()
+        floating_view, floating_page = View(), Page()
+
+        _configure_main_web_view(main_view, main_page)
+        _configure_floating_web_view(floating_view, floating_page)
+
+        translucent = Qt.WidgetAttribute.WA_TranslucentBackground
+        self.assertEqual(main_view.attributes, [(translucent, False)])
+        self.assertEqual(main_page.color.name(), "#f7f9fc")
+        self.assertEqual(main_page.color.alpha(), 255)
+        self.assertIn("background: #f7f9fc", main_view.style)
+        self.assertEqual(floating_view.attributes, [(translucent, True)])
+        self.assertEqual(floating_page.color.alpha(), 0)
+        self.assertIn("background: transparent", floating_view.style)
+
+    def test_minimize_to_tray_is_silent(self):
+        class Tray:
+            @staticmethod
+            def isVisible():
+                return True
+
+            @staticmethod
+            def showMessage(*_args):
+                raise AssertionError("minimize-to-tray must not create a notification")
+
+        class Window:
+            _tray = Tray()
+            hidden = False
+
+            def hide(self):
+                self.hidden = True
+
+            def showMinimized(self):
+                raise AssertionError("visible tray should use the silent hide path")
+
+        window = Window()
+        DesktopWindow.minimizeToTray(window)
+        self.assertTrue(window.hidden)
+
     def test_settings_normalize_persist_and_preserve_library(self):
         with tempfile.TemporaryDirectory() as temp:
             library_path = Path(temp) / "library.json"
@@ -174,27 +241,45 @@ class Stage4FloatingServiceTests(unittest.TestCase):
             state = service.state()
             self.assertEqual(state["sessionId"], "session-4")
             self.assertEqual(state["bookId"], "book-4")
-            self.assertEqual(state["settings"]["opacity"], 1.0)
+            self.assertEqual(state["settings"]["backgroundOpacity"], 1.0)
             self.assertEqual(state["settings"]["fontSize"], 14)
             self.assertEqual(state["settings"]["background"], "sepia")
+            self.assertTrue(state["settings"]["hoverDisplayEnabled"])
 
             state = service.update_settings({
-                "opacity": 0.8,
+                "backgroundOpacity": 0.8,
                 "fontSize": 28,
+                "followReaderFont": False,
                 "topmost": False,
                 "background": "dark",
+                "textColor": "#12abEF",
+                "hoverDisplayEnabled": False,
             })
-            self.assertEqual(state["settings"]["opacity"], 0.8)
+            self.assertEqual(state["settings"]["backgroundOpacity"], 0.8)
+            self.assertEqual(state["settings"]["textColor"], "#12ABEF")
+            self.assertFalse(state["settings"]["followReaderFont"])
+            self.assertFalse(state["settings"]["hoverDisplayEnabled"])
             service.update_geometry("600x300-1800+80")
             stored = json.loads(library_path.read_text(encoding="utf-8"))
             self.assertIn("kept", stored["books"])
             self.assertEqual(stored["settings"]["floating_reader_geometry"], "600x300-1800+80")
             self.assertEqual(stored["settings"]["floating_reader_background"], "dark")
+            self.assertEqual(stored["settings"]["floating_reader_background_opacity"], 0.8)
+            self.assertEqual(stored["settings"]["floating_reader_text_color"], "#12ABEF")
+            self.assertFalse(stored["settings"]["floating_reader_follow_font"])
+            self.assertFalse(stored["settings"]["floating_reader_hover_display"])
+
+            reloaded = FloatingReaderService(playback, library_path).state()["settings"]
+            self.assertEqual(reloaded["backgroundOpacity"], 0.8)
+            self.assertEqual(reloaded["fontSize"], 28)
+            self.assertEqual(reloaded["textColor"], "#12ABEF")
+            self.assertFalse(reloaded["followReaderFont"])
+            self.assertFalse(reloaded["hoverDisplayEnabled"])
 
     def test_invalid_patch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             service = FloatingReaderService(_Playback(), Path(temp) / "library.json")
-            for patch in ({"geometry": "x"}, {"opacity": 0.2}, {"fontSize": True}):
+            for patch in ({"geometry": "x"}, {"backgroundOpacity": -0.01}, {"fontSize": True}, {"textColor": "red"}, {"hoverDisplayEnabled": "yes"}):
                 with self.assertRaises(FloatingReaderError):
                     service.update_settings(patch)
 
@@ -220,6 +305,49 @@ class Stage4FloatingServiceTests(unittest.TestCase):
 
     def test_floating_surface_url_is_frozen(self):
         self.assertEqual(floating_frontend_url().query(), "surface=floating")
+
+    def test_windows_10_corner_fallback_is_limited_to_the_opaque_main_window(self):
+        class Window:
+            def __init__(self, width=1200, height=800):
+                self.clear_count = 0
+                self.mask_count = 0
+                self._width = width
+                self._height = height
+
+            def width(self):
+                return self._width
+
+            def height(self):
+                return self._height
+
+            def clearMask(self):
+                self.clear_count += 1
+
+            def setMask(self, mask):
+                self.mask_count += 1
+                self.mask = mask
+
+        floating = Window()
+        main = Window()
+        with mock.patch(
+            "novelreader.qt_host._set_windows_corner_preference", return_value=False
+        ) as preference:
+            _apply_window_corners(floating, 30, True)
+            _apply_window_corners(main, 22, True, allow_opaque_mask=True)
+            _apply_window_corners(main, 22, True, allow_opaque_mask=True)
+        self.assertEqual(floating.mask_count, 0)
+        self.assertEqual(floating.clear_count, 1)
+        self.assertEqual(main.mask_count, 1)
+        self.assertTrue(main.mask.contains(QPoint(600, 400)))
+        self.assertFalse(main.mask.contains(QPoint(0, 0)))
+        self.assertEqual(preference.call_count, 2)
+
+    def test_rounded_window_region_preserves_edges_and_excludes_corner_pixels(self):
+        region = _rounded_window_region(100, 80, 20)
+        self.assertTrue(region.contains(QPoint(50, 0)))
+        self.assertTrue(region.contains(QPoint(0, 40)))
+        self.assertTrue(region.contains(QPoint(50, 40)))
+        self.assertFalse(region.contains(QPoint(0, 0)))
 
     def test_live_persist_clamps_fully_offscreen_geometry_without_recursion(self):
         harness = _FloatingGeometryHarness(
@@ -266,8 +394,14 @@ class Stage4BridgeTests(unittest.TestCase):
     def test_show_update_close_share_playback_and_emit_state(self):
         events = []
         self.bridge.floatingReaderChanged.connect(lambda raw: events.append(json.loads(raw)))
+        pointer_events = []
+        self.bridge.floatingPointerChanged.connect(pointer_events.append)
         self.assertGreaterEqual(
             self.bridge.metaObject().indexOfSignal("floatingReaderChanged(QString)"),
+            0,
+        )
+        self.assertGreaterEqual(
+            self.bridge.metaObject().indexOfSignal("floatingPointerChanged(bool)"),
             0,
         )
 
@@ -278,11 +412,21 @@ class Stage4BridgeTests(unittest.TestCase):
         self.assertEqual(self.window.shown, 1)
 
         updated = self._data(self.bridge.updateFloatingReaderSettings(json.dumps({
-            "patch": {"opacity": 0.75, "topmost": False, "fontSize": 30}
+            "patch": {"backgroundOpacity": 0.75, "topmost": False, "fontSize": 30, "hoverDisplayEnabled": False}
         })))
         self.assertEqual(updated["settings"]["fontSize"], 30)
         self.assertFalse(updated["settings"]["topmost"])
+        self.assertFalse(updated["settings"]["hoverDisplayEnabled"])
+        self.bridge.floatingPointerChanged.emit(True)
+        self.bridge.floatingPointerChanged.emit(False)
+        self.assertEqual(pointer_events, [True, False])
         self.assertGreaterEqual(len(events), 2)
+
+        followed = self._data(self.bridge.updateFloatingReaderSettings(json.dumps({
+            "patch": {"followReaderFont": True}
+        })))
+        self.assertTrue(followed["settings"]["followReaderFont"])
+        self.assertEqual(followed["settings"]["fontSize"], 31)
 
         closed = self._data(self.bridge.closeFloatingReader())
         self.assertTrue(closed["closed"])

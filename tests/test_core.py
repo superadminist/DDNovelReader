@@ -212,13 +212,17 @@ def test_tts_logic():
     pf = _EdgePrefetch(fake_synth, pcontent, 0, 5)
     deadline = time.time() + 10
     while time.time() < deadline:
-        if pf._queue.qsize() >= 5:
+        if pf.ready_count() >= 5:
             break
         time.sleep(0.02)
-    check("预取缓冲填满上限", pf._queue.qsize() == 5, f"qsize={pf._queue.qsize()}")
+    check("预取缓冲填满上限", pf.ready_count() == 5, f"qsize={pf.ready_count()}")
     item = pf.get(timeout=2)
     check("预取首句正确", item is not None and item[0] == "第一句。", str(item))
-    check("预取句序递增", made[:4] == ["第一句。", "第二句。", "第三句。", "第四句。"], str(made[:4]))
+    check(
+        "并发预取范围连续",
+        set(made[:5]) == {"第一句。", "第二句。", "第三句。", "第四句。", "第五句。"},
+        str(made[:5]),
+    )
     check("默认预取上限为 30", _EdgePrefetch.MAX_AHEAD == 30, str(_EdgePrefetch.MAX_AHEAD))
     pf.close()
 

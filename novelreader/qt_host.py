@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QFile, QIODevice, QRect, QTimer, Qt, QUrl, QUrlQuery
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QGuiApplication, QIcon, QRegion
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
@@ -20,7 +21,7 @@ from PySide6.QtWebEngineCore import (
     QWebEngineUrlRequestInterceptor,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenu, QMessageBox, QSystemTrayIcon
 
 from .book_loader import SUPPORTED_EXTS
 from .library_service import LibraryQueryService
@@ -124,6 +125,98 @@ def _inject_qwebchannel_script(page: QWebEnginePage) -> None:
     page.scripts().insert(script)
 
 
+def _configure_main_web_view(view: QWebEngineView, page: QWebEnginePage) -> None:
+    """Keep the main WebEngine surface opaque during native move/resize."""
+    view.setObjectName("mainWebView")
+    page.setBackgroundColor(QColor("#f7f9fc"))
+    view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    view.setStyleSheet("QWebEngineView#mainWebView { background: #f7f9fc; }")
+
+
+def _configure_floating_web_view(view: QWebEngineView, page: QWebEnginePage) -> None:
+    """Allow the floating surface to own its user-configurable opacity."""
+    view.setObjectName("floatingWebView")
+    page.setBackgroundColor(QColor(0, 0, 0, 0))
+    view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    view.setStyleSheet("QWebEngineView#floatingWebView { background: transparent; }")
+
+
+def _set_windows_corner_preference(window: QMainWindow, rounded: bool) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        preference = ctypes.c_int(2 if rounded else 1)
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(int(window.winId())),
+            33,
+            ctypes.byref(preference),
+            ctypes.sizeof(preference),
+        )
+        return result == 0
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _rounded_window_region(width: int, height: int, radius: int) -> QRegion:
+    """Build a stable rounded region for an opaque Windows 10 top-level window."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    radius = max(0, min(int(radius), width // 2, height // 2))
+    if radius == 0:
+        return QRegion(0, 0, width, height)
+    diameter = radius * 2
+    region = QRegion(radius, 0, width - diameter, height)
+    region |= QRegion(0, radius, width, height - diameter)
+    ellipse = QRegion.RegionType.Ellipse
+    region |= QRegion(0, 0, diameter, diameter, ellipse)
+    region |= QRegion(width - diameter, 0, diameter, diameter, ellipse)
+    region |= QRegion(0, height - diameter, diameter, diameter, ellipse)
+    region |= QRegion(width - diameter, height - diameter, diameter, diameter, ellipse)
+    return region
+
+
+def _suspend_window_corner_mask(window: QMainWindow) -> None:
+    if not getattr(window, "_dd_corner_mask_active", False):
+        return
+    window.clearMask()
+    window._dd_corner_mask_active = False
+    window._dd_corner_state = None
+
+
+def _apply_window_corners(
+    window: QMainWindow,
+    radius: int,
+    rounded: bool,
+    *,
+    allow_opaque_mask: bool = False,
+) -> None:
+    # resizeEvent fires continuously while the user drags a window edge. On a
+    # translucent WebEngine top-level window, repeatedly clearing the mask and
+    # asking DWM to re-apply the same preference invalidates the compositor
+    # surface and can make the entire window disappear for a frame. Corner mode
+    # changes only when entering/leaving maximized or fullscreen state.
+    mask_size = (int(window.width()), int(window.height())) if rounded and allow_opaque_mask else None
+    corner_state = (bool(rounded), int(radius), bool(allow_opaque_mask), mask_size)
+    if getattr(window, "_dd_corner_state", None) == corner_state:
+        return
+    window._dd_corner_state = corner_state
+    if not rounded:
+        window.clearMask()
+        window._dd_corner_mask_active = False
+        _set_windows_corner_preference(window, False)
+        return
+    if _set_windows_corner_preference(window, True) or not allow_opaque_mask:
+        window.clearMask()
+        window._dd_corner_mask_active = False
+        return
+    # Windows 10 has no DWMWA_WINDOW_CORNER_PREFERENCE.  Only the opaque main
+    # window uses this fallback, and it is applied after live resize settles so
+    # the region never invalidates every compositor frame.  The translucent
+    # floating window continues to use its smoother CSS anti-aliased corners.
+    window.setMask(_rounded_window_region(window.width(), window.height(), radius))
+    window._dd_corner_mask_active = True
+
+
 class FloatingReaderWindow(QMainWindow):
     """Independent frameless React window sharing the main window's bridge."""
 
@@ -135,12 +228,14 @@ class FloatingReaderWindow(QMainWindow):
         self._applying_geometry_clamp = False
         self._settings: dict = {}
         self.setWindowTitle("多多朗读 - 悬浮朗读")
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(360, 220)
 
         self._view = QWebEngineView(self)
         self._page = QWebEnginePage(profile, self._view)
         self._view.setPage(self._page)
+        _configure_floating_web_view(self._view, self._page)
         self._page.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
             True,
@@ -165,7 +260,9 @@ class FloatingReaderWindow(QMainWindow):
         )
         self.setGeometry(rect)
         self.apply_settings(settings)
+        self.bridge.floatingPointerChanged.emit(False)
         self.show()
+        _apply_window_corners(self, 30, True)
         if settings.get("topmost", True):
             self.raise_()
         self._persist_geometry()
@@ -173,13 +270,13 @@ class FloatingReaderWindow(QMainWindow):
     def apply_settings(self, settings: dict) -> None:
         self._settings = dict(settings)
         was_visible = self.isVisible()
-        self.setWindowOpacity(float(settings.get("opacity", 0.92)))
         self.setWindowFlag(
             Qt.WindowType.WindowStaysOnTopHint,
             bool(settings.get("topmost", True)),
         )
         if was_visible:
             self.show()
+            QTimer.singleShot(0, lambda: _apply_window_corners(self, 30, True))
 
     def ensure_visible_after_main_minimize(self) -> None:
         if self.isVisible():
@@ -199,10 +296,19 @@ class FloatingReaderWindow(QMainWindow):
             event.accept()
             return
         self._geometry_timer.stop()
+        self.bridge.floatingPointerChanged.emit(False)
         self._persist_geometry()
         self.hide()
         event.ignore()
         self.bridge.floatingWindowClosed()
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self.bridge.floatingPointerChanged.emit(True)
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.bridge.floatingPointerChanged.emit(False)
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
@@ -214,6 +320,7 @@ class FloatingReaderWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        _apply_window_corners(self, 30, True)
         if (
             hasattr(self, "_geometry_timer")
             and not self._applying_geometry_clamp
@@ -244,8 +351,22 @@ class DesktopWindow(QMainWindow):
         _qa_trace("desktop-window:start")
         self.setWindowTitle("多多朗读")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        # A translucent top-level QWebEngine window is periodically dropped by
+        # Windows' compositor during interactive resize, exposing the desktop
+        # for a complete frame.  The main window has no user-controlled
+        # transparency, so keep it on the stable opaque composition path and
+        # let DWM own the outer rounded clip.  The floating window deliberately
+        # remains translucent because its background opacity is configurable.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setStyleSheet("QMainWindow { background: #f7f9fc; }")
         self.setMinimumSize(960, 620)
+        self._corner_timer = QTimer(self)
+        self._corner_timer.setSingleShot(True)
+        self._corner_timer.setInterval(140)
+        self._corner_timer.timeout.connect(self._sync_window_corners)
         self.resize(1280, 720)
+        self._exit_requested = False
+        self._tray: QSystemTrayIcon | None = None
 
         icon_path = application_root() / "assets" / "app.ico"
         if icon_path.is_file():
@@ -263,6 +384,7 @@ class DesktopWindow(QMainWindow):
         self._page = QWebEnginePage(self._profile, self._view)
         _qa_trace("desktop-window:page-created")
         self._view.setPage(self._page)
+        _configure_main_web_view(self._view, self._page)
         self._page.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
             True,
@@ -281,6 +403,7 @@ class DesktopWindow(QMainWindow):
             playback=self._playback,
             file_picker=self._select_import_files,
         )
+        self._setup_system_tray()
         _qa_trace("desktop-window:bridge-created")
         self._floating_window: FloatingReaderWindow | None = None
         self._channel = QWebChannel(self._page)
@@ -317,6 +440,62 @@ class DesktopWindow(QMainWindow):
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
+
+    def _setup_system_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = self.windowIcon()
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip("多多朗读")
+        menu = QMenu(self)
+        self._tray_menu = menu
+        self._tray_show_action = QAction("显示主界面", menu)
+        self._tray_show_action.triggered.connect(self.restoreFromTray)
+        self._tray_floating_action = QAction("显示悬浮朗读", menu)
+        self._tray_floating_action.triggered.connect(self._toggle_floating_from_tray)
+        self._tray_exit_action = QAction("退出", menu)
+        self._tray_exit_action.triggered.connect(self.requestApplicationExit)
+        menu.addAction(self._tray_show_action)
+        menu.addAction(self._tray_floating_action)
+        menu.addSeparator()
+        menu.addAction(self._tray_exit_action)
+        menu.aboutToShow.connect(self._refresh_tray_menu)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._handle_tray_activation)
+        self._tray.show()
+
+    def _refresh_tray_menu(self) -> None:
+        if not hasattr(self, "_tray_floating_action"):
+            return
+        visible = bool(self._floating_window and self._floating_window.isVisible())
+        self._tray_floating_action.setText("隐藏悬浮朗读" if visible else "显示悬浮朗读")
+        identity = self._playback.session_identity()
+        self._tray_floating_action.setEnabled(visible or bool(identity.get("sessionId")))
+
+    def _handle_tray_activation(self, reason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.restoreFromTray()
+
+    def _toggle_floating_from_tray(self) -> None:
+        if self._floating_window is not None and self._floating_window.isVisible():
+            self.closeFloatingReaderWindow()
+            return
+        self.bridge.showFloatingReader()
+
+    def minimizeToTray(self) -> None:
+        if self._tray is None or not self._tray.isVisible():
+            self.showMinimized()
+            return
+        self.hide()
+
+    def restoreFromTray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def requestApplicationExit(self) -> None:
+        self._exit_requested = True
+        self.close()
 
     def _select_import_files(self) -> list[str]:
         patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_EXTS))
@@ -365,13 +544,38 @@ class DesktopWindow(QMainWindow):
         window.deleteLater()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._exit_requested = True
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.deleteLater()
         if hasattr(self, "bridge"):
             self.bridge.shutdown()
         super().closeEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "bridge"):
+            QTimer.singleShot(0, self._sync_window_corners)
             self.bridge.emitWindowState()
             if self.isMinimized() and self._floating_window is not None:
                 self._floating_window.ensure_visible_after_main_minimize()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.isMaximized() or self.isFullScreen():
+            self._corner_timer.stop()
+            self._sync_window_corners()
+            return
+        _suspend_window_corner_mask(self)
+        self._corner_timer.start()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_window_corners)
+
+    def _sync_window_corners(self) -> None:
+        rounded = not self.isMaximized() and not self.isFullScreen()
+        _apply_window_corners(self, 22, rounded, allow_opaque_mask=True)

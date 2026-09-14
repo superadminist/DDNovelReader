@@ -26,6 +26,15 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { connectBridge } from "./bridge.js";
+import { floatingLyricTransition, floatingSentenceIdentity } from "./floatingLyrics.js";
+import {
+  floatingFontWheelChange,
+  floatingPickerColor,
+  floatingTextColorPatch,
+  mergeFloatingState,
+  settingsPatchIds,
+} from "./floatingSettings.js";
+import { windowControlPresentation } from "./windowControls.js";
 
 const EMPTY_CONTROLS = {
   minimizeWindow() {},
@@ -41,6 +50,13 @@ const DEFAULT_APP_PREFERENCES = {
   colorScheme: "light",
   autoOpenLast: true,
   startupBookId: "",
+};
+
+const DEFAULT_SPEECH_STATE = {
+  settings: { ttsVoiceId: "", ttsRate: 200, sentenceGapSeconds: 0.1 },
+  voices: [{ id: "", label: "系统默认音色", backend: "sapi", requiresNetwork: false }],
+  loadingLocalVoices: false,
+  localVoiceError: "",
 };
 
 const EMPTY_CAPABILITIES = {
@@ -80,7 +96,7 @@ const EMPTY_FLOATING_STATE = {
   visible: false,
   sessionId: "",
   bookId: "",
-  settings: { geometry: "", topmost: false, opacity: 1, fontSize: 20, followReaderFont: true, background: "light", bilingual: false },
+  settings: { geometry: "", topmost: false, backgroundOpacity: 1, fontSize: 20, followReaderFont: true, background: "light", bilingual: false, textColor: "auto", hoverDisplayEnabled: true },
   playback: { status: "idle", position: { chapterIndex: 0, charOffset: 0, progressPercent: 0 }, sentence: null, requestedBackend: "sapi", activeBackend: null, fallbackActive: false },
   context: { chapterIndex: 0, chapterTitle: "", previous: null, current: null, next: null },
 };
@@ -173,24 +189,32 @@ function Rail({ page, setPage, readerEnabled, audioEnabled, darkMode, onToggleDa
   );
 }
 
-function MacTitlebar({ controls, desktopMode }) {
+function WindowTitlebar({ controls, desktopMode, windowState }) {
+  const windowPresentation = windowControlPresentation(windowState);
+  const isTitlebarAction = (target) => target.closest("button, input, [data-no-window-drag]");
   const startMove = (event) => {
-    if (!desktopMode || event.button !== 0 || event.target.closest("button, input")) return;
+    if (!desktopMode || event.button !== 0 || isTitlebarAction(event.target)) return;
     controls.startWindowMove();
   };
   const toggleMaximize = (event) => {
-    if (!desktopMode || event.target.closest("button, input")) return;
+    if (!desktopMode || isTitlebarAction(event.target)) return;
     controls.toggleMaximizeWindow();
   };
   return (
     <header className="mac-titlebar" onPointerDown={startMove} onDoubleClick={toggleMaximize}>
-      <div className="traffic-lights">
-        <button className="traffic red" aria-label="关闭窗口" title="关闭窗口" onClick={controls.closeWindow} />
-        <button className="traffic yellow" aria-label="最小化窗口" title="最小化窗口" onClick={controls.minimizeWindow} />
-        <button className="traffic green" aria-label="最大化或还原窗口" title="最大化或还原窗口" onClick={controls.toggleMaximizeWindow} />
-      </div>
       <div className="app-title">多多朗读</div>
-      <div className="titlebar-actions"><IconButton label="搜索"><MagnifyingGlass /></IconButton><div className="avatar">D</div></div>
+      <div className="titlebar-actions" data-no-window-drag><IconButton label="搜索"><MagnifyingGlass /></IconButton><div className="avatar">D</div></div>
+      <div className="window-controls" data-no-window-drag>
+        <button type="button" className="window-control" aria-label="最小化窗口" title="最小化窗口" onClick={controls.minimizeWindow}>
+          <span className="window-control-icon minimize" aria-hidden="true" />
+        </button>
+        <button type="button" className="window-control" aria-label={windowPresentation.maximizeLabel} title={windowPresentation.maximizeLabel} onClick={controls.toggleMaximizeWindow}>
+          <span className={`window-control-icon ${windowPresentation.maximizeIcon}`} aria-hidden="true" />
+        </button>
+        <button type="button" className="window-control close" aria-label="关闭窗口" title="关闭窗口" onClick={controls.closeWindow}>
+          <span className="window-control-icon close" aria-hidden="true" />
+        </button>
+      </div>
     </header>
   );
 }
@@ -368,17 +392,134 @@ function DemoFloatingReader({ playing, setPlaying, onClose, bilingual, setBiling
 }
 
 function FloatingSentence({ tone, sentence, emptyText }) {
-  return <p className={`floating-sentence ${tone}`} data-sentence-role={tone}>{sentence?.text || emptyText}</p>;
+  const identity = sentence ? `${sentence.chapterIndex}:${sentence.startOffset}` : `${tone}:empty`;
+  return <p className={`floating-sentence ${tone}`} data-sentence-role={tone} data-sentence-id={identity}>{sentence?.text || emptyText}</p>;
 }
 
-function NativeFloatingReader({ state, loading, error, pendingCommand, pendingSetting, onCommand, onSettings, onClose, onMove, onResize }) {
+function FloatingLyricLayer({ context, bilingual, className = "", hidden = false }) {
+  return (
+    <div className={`floating-lyric-layer ${className}`} aria-hidden={hidden ? "true" : undefined} data-current-sentence-id={floatingSentenceIdentity(context.current)}>
+      <FloatingSentence tone="previous" sentence={context.previous} emptyText="已经到达本章开头" />
+      <FloatingSentence tone="current" sentence={context.current} emptyText="开始朗读后，这里会显示当前句" />
+      {bilingual ? <p className="floating-bilingual-note">双语偏好已开启；当前内容未提供译文。</p> : null}
+      <FloatingSentence tone="next" sentence={context.next} emptyText="已经到达本章结尾" />
+    </div>
+  );
+}
+
+function NativeFloatingReader({ state, loading, error, pointerInside, onPointerInsideChange, pendingCommand, pendingSetting, onCommand, onSettings, onClose, onMove, onResize }) {
   const { settings, playback, context } = state;
   const playing = playback.status === "playing";
-  const progress = Math.max(0, Math.min(100, playback.position.progressPercent));
   const canControlPlayback = Boolean(state.sessionId) && !pendingCommand;
-  const settingDisabled = Boolean(pendingSetting);
-  const changeFontSize = (delta) => onSettings({ followReaderFont: false, fontSize: Math.max(14, Math.min(40, settings.fontSize + delta)) });
-  const changeOpacity = (delta) => onSettings({ opacity: Math.round(Math.max(0.65, Math.min(1, settings.opacity + delta)) * 100) / 100 });
+  const settingPending = (key) => pendingSetting?.includes(key);
+  const rootRef = useRef(null);
+  const contentRef = useRef(null);
+  const fontTimerRef = useRef(null);
+  const opacityTimerRef = useRef(null);
+  const lyricTimerRef = useRef(null);
+  const renderedContextRef = useRef(context);
+  const fontSizeRef = useRef(settings.fontSize);
+  const followReaderFontRef = useRef(settings.followReaderFont);
+  const opacityRef = useRef(settings.backgroundOpacity);
+  const [visibleFontSize, setVisibleFontSize] = useState(settings.fontSize);
+  const [visibleOpacity, setVisibleOpacity] = useState(settings.backgroundOpacity);
+  const [renderedContext, setRenderedContext] = useState(context);
+  const [departingLyric, setDepartingLyric] = useState(null);
+  const [lyricDirection, setLyricDirection] = useState("");
+  const hoverDisplayEnabled = settings.hoverDisplayEnabled !== false;
+  const interactionVisible = pointerInside;
+
+  useEffect(() => {
+    fontSizeRef.current = settings.fontSize;
+    setVisibleFontSize(settings.fontSize);
+  }, [settings.fontSize]);
+  useEffect(() => {
+    followReaderFontRef.current = settings.followReaderFont;
+  }, [settings.followReaderFont]);
+  useEffect(() => {
+    opacityRef.current = settings.backgroundOpacity;
+    setVisibleOpacity(settings.backgroundOpacity);
+  }, [settings.backgroundOpacity]);
+  useEffect(() => () => {
+    clearTimeout(fontTimerRef.current);
+    clearTimeout(opacityTimerRef.current);
+    clearTimeout(lyricTimerRef.current);
+  }, []);
+  useEffect(() => {
+    const previous = renderedContextRef.current;
+    const transition = floatingLyricTransition(previous, context);
+    renderedContextRef.current = context;
+    setRenderedContext(context);
+    if (!transition.changed) return;
+    setDepartingLyric({ context: previous, direction: transition.direction });
+    setLyricDirection(transition.direction);
+    clearTimeout(lyricTimerRef.current);
+    lyricTimerRef.current = setTimeout(() => {
+      setDepartingLyric(null);
+      setLyricDirection("");
+    }, 240);
+  }, [context]);
+  useEffect(() => {
+    const root = rootRef.current;
+    const content = contentRef.current;
+    if (!root || !content) return undefined;
+    let frame = 0;
+    const fit = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        root.dataset.contextMode = "all";
+        if (hoverDisplayEnabled && !pointerInside) {
+          const current = content.querySelector('[data-sentence-role="current"]');
+          content.scrollTop = content.scrollHeight > content.clientHeight + 1 && current
+            ? Math.max(0, current.offsetTop - (content.clientHeight - current.offsetHeight) / 2)
+            : 0;
+          return;
+        }
+        if (content.scrollHeight > content.clientHeight + 1) root.dataset.contextMode = "current-next";
+        if (content.scrollHeight > content.clientHeight + 1) root.dataset.contextMode = "current-only";
+        content.scrollTop = 0;
+      });
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(root);
+    observer.observe(content);
+    fit();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [renderedContext.previous?.text, renderedContext.current?.text, renderedContext.next?.text, visibleFontSize, settings.bilingual, error, hoverDisplayEnabled, pointerInside]);
+  const changeFontByWheel = (event) => {
+    event.preventDefault();
+    const change = floatingFontWheelChange(
+      fontSizeRef.current,
+      followReaderFontRef.current,
+      event.deltaY,
+    );
+    if (!change) return;
+    fontSizeRef.current = change.fontSize;
+    setVisibleFontSize(change.fontSize);
+    clearTimeout(fontTimerRef.current);
+    if (change.immediate) {
+      followReaderFontRef.current = false;
+      onSettings(change.patch);
+      return;
+    }
+    fontTimerRef.current = setTimeout(() => onSettings(change.patch), 250);
+  };
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) return undefined;
+    content.addEventListener("wheel", changeFontByWheel, { passive: false });
+    return () => content.removeEventListener("wheel", changeFontByWheel);
+  }, [onSettings]);
+  const changeBackgroundOpacity = (value) => {
+    const next = Math.max(0, Math.min(100, Number(value))) / 100;
+    opacityRef.current = next;
+    setVisibleOpacity(next);
+    clearTimeout(opacityTimerRef.current);
+    opacityTimerRef.current = setTimeout(() => onSettings({ backgroundOpacity: next }), 180);
+  };
   const startMove = (event) => {
     if (event.button !== 0 || event.target.closest("button, input")) return;
     event.preventDefault();
@@ -387,24 +528,35 @@ function NativeFloatingReader({ state, loading, error, pendingCommand, pendingSe
 
   return (
     <main
+      ref={rootRef}
       className={`native-floating-surface background-${settings.background}`}
       data-testid="native-floating-reader"
       data-window-visible={state.visible ? "true" : "false"}
-      style={{ "--floating-font-size": `${settings.fontSize}px` }}
+      data-pointer-inside={pointerInside ? "true" : "false"}
+      data-hover-display-enabled={hoverDisplayEnabled ? "true" : "false"}
+      data-interaction-visible={interactionVisible ? "true" : "false"}
+      data-context-mode="all"
+      onPointerEnter={() => onPointerInsideChange(true)}
+      onPointerLeave={() => onPointerInsideChange(false)}
+      style={{
+        "--floating-font-size": `${visibleFontSize}px`,
+        "--floating-panel-opacity": visibleOpacity,
+        "--floating-custom-text": settings.textColor === "auto" ? "var(--floating-text-default)" : settings.textColor,
+        backdropFilter: visibleOpacity === 0 ? "none" : undefined,
+        WebkitBackdropFilter: visibleOpacity === 0 ? "none" : undefined,
+      }}
     >
       <WindowResizeHandles controls={{ startWindowResize: onResize }} />
       <header className="floating-dragbar" onPointerDown={startMove}>
         <div><span className={`live-dot ${playing ? "playing" : ""}`} /><span className="floating-chapter">{context.chapterTitle || "悬浮朗读"}</span><span className="floating-status">{loading ? "正在同步" : playing ? "正在朗读" : playback.status === "paused" ? "已暂停" : "已就绪"}</span></div>
         <div className="floating-window-actions">
-          <IconButton label={settings.topmost ? "取消置顶" : "置顶悬浮窗"} active={settings.topmost} onClick={settingDisabled ? undefined : () => onSettings({ topmost: !settings.topmost })}><PushPin weight={settings.topmost ? "fill" : "regular"} /></IconButton>
+          <IconButton label={settings.topmost ? "取消置顶" : "置顶悬浮窗"} active={settings.topmost} onClick={settingPending("topmost") ? undefined : () => onSettings({ topmost: !settings.topmost })}><PushPin weight={settings.topmost ? "fill" : "regular"} /></IconButton>
           <IconButton label="关闭悬浮窗" onClick={onClose}><X /></IconButton>
         </div>
       </header>
-      <section className="floating-content" aria-live="polite">
-        <FloatingSentence tone="previous" sentence={context.previous} emptyText="已经到达本章开头" />
-        <FloatingSentence tone="current" sentence={context.current} emptyText="开始朗读后，这里会显示当前句" />
-        {settings.bilingual ? <p className="floating-bilingual-note">双语偏好已开启；当前内容未提供译文。</p> : null}
-        <FloatingSentence tone="next" sentence={context.next} emptyText="已经到达本章结尾" />
+      <section ref={contentRef} className="floating-content" aria-live="polite" title="滚动鼠标滚轮可调整字号">
+        <FloatingLyricLayer context={renderedContext} bilingual={settings.bilingual} className={lyricDirection ? `active enter-${lyricDirection}` : "active"} />
+        {departingLyric ? <FloatingLyricLayer context={departingLyric.context} bilingual={settings.bilingual} className={`departing exit-${departingLyric.direction}`} hidden /> : null}
       </section>
       {error ? <div className="floating-error" role="alert">{error}</div> : null}
       <footer className="floating-controls">
@@ -413,21 +565,12 @@ function NativeFloatingReader({ state, loading, error, pendingCommand, pendingSe
           <button className="floating-play" aria-label={playing ? "暂停" : "播放"} disabled={!canControlPlayback} onClick={() => onCommand(playing ? "pause" : "play")}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
           <IconButton label="下一句" onClick={canControlPlayback ? () => onCommand("nextSentence") : undefined}><CaretRight weight="fill" /></IconButton>
         </div>
-        <div className="floating-progress" aria-label={`阅读进度 ${progress.toFixed(1)}%`}><span style={{ width: `${progress}%` }} /></div>
+        <label className="floating-opacity-control">
+          <span>背景 {Math.round(visibleOpacity * 100)}%</span>
+          <input aria-label="悬浮窗背景透明度" type="range" min="0" max="100" step="5" value={Math.round(visibleOpacity * 100)} disabled={settingPending("backgroundOpacity")} onChange={(event) => changeBackgroundOpacity(event.target.value)} />
+        </label>
         <div className="floating-settings">
-          <button className={`language-toggle ${settings.bilingual ? "on" : ""}`} aria-label="显示双语" disabled={settingDisabled} onClick={() => onSettings({ bilingual: !settings.bilingual })}>中 / EN</button>
-          <IconButton label="缩小浮窗文字" onClick={settingDisabled ? undefined : () => changeFontSize(-1)}><Minus /></IconButton>
-          <span className="floating-font-value">{settings.fontSize}</span>
-          <IconButton label="放大浮窗文字" onClick={settingDisabled ? undefined : () => changeFontSize(1)}><Plus /></IconButton>
-        </div>
-        <div className="floating-preferences">
-          <button aria-label="切换浅色背景" className={settings.background === "light" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "light" })}>浅</button>
-          <button aria-label="切换米色背景" className={settings.background === "sepia" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "sepia" })}>米</button>
-          <button aria-label="切换深色背景" className={settings.background === "dark" ? "selected" : ""} onClick={settingDisabled ? undefined : () => onSettings({ background: "dark" })}>深</button>
-          <IconButton label="降低悬浮窗透明度" onClick={settingDisabled ? undefined : () => changeOpacity(-0.05)}><Minus /></IconButton>
-          <span className="floating-opacity">{Math.round(settings.opacity * 100)}%</span>
-          <IconButton label="提高悬浮窗透明度" onClick={settingDisabled ? undefined : () => changeOpacity(0.05)}><Plus /></IconButton>
-          <button className={`follow-font-toggle ${settings.followReaderFont ? "selected" : ""}`} aria-label="跟随阅读器字号" onClick={settingDisabled ? undefined : () => onSettings({ followReaderFont: !settings.followReaderFont })}>跟随字号</button>
+          <button className={`language-toggle ${settings.bilingual ? "on" : ""}`} aria-label="显示双语" disabled={settingPending("bilingual")} onClick={() => onSettings({ bilingual: !settings.bilingual })}>中 / EN</button>
         </div>
       </footer>
     </main>
@@ -438,7 +581,8 @@ function FloatingApplication() {
   const [floatingState, setFloatingState] = useState(null);
   const [error, setError] = useState("");
   const [pendingCommand, setPendingCommand] = useState("");
-  const [pendingSetting, setPendingSetting] = useState(false);
+  const [pendingSettings, setPendingSettings] = useState([]);
+  const [pointerInside, setPointerInside] = useState(false);
   const connectionRef = useRef(null);
 
   useEffect(() => {
@@ -462,8 +606,10 @@ function FloatingApplication() {
         if (!active) return;
         setFloatingState(event.state);
         setPendingCommand("");
-        setPendingSetting(false);
         if (event.state.playback.status !== "error") setError("");
+      });
+      connection.onFloatingPointerChanged((inside) => {
+        if (active) setPointerInside(inside);
       });
       try {
         const response = connection.mode === "demo" ? await connection.floating.show() : await connection.floating.getState();
@@ -500,14 +646,20 @@ function FloatingApplication() {
   const updateSettings = async (patch) => {
     const connection = connectionRef.current;
     if (!connection) return;
-    setPendingSetting(true);
+    const keys = Object.keys(patch);
+    const previousValues = Object.fromEntries(
+      keys.map((key) => [key, floatingState?.settings?.[key]]),
+    );
+    setPendingSettings((current) => [...new Set([...current, ...keys])]);
+    setFloatingState((current) => mergeFloatingState(current, patch));
     try {
       const response = await connection.floating.updateSettings({ patch });
       setFloatingState(response.data);
-      setPendingSetting(false);
     } catch (caught) {
-      setPendingSetting(false);
+      setFloatingState((current) => mergeFloatingState(current, previousValues));
       setError(caught.message || "悬浮朗读设置保存失败。");
+    } finally {
+      setPendingSettings((current) => current.filter((key) => !keys.includes(key)));
     }
   };
   const close = async () => {
@@ -536,10 +688,12 @@ function FloatingApplication() {
     <div className="floating-surface-stage">
       <NativeFloatingReader
         state={state}
+        pointerInside={pointerInside}
+        onPointerInsideChange={setPointerInside}
         loading={!floatingState}
         error={error}
         pendingCommand={pendingCommand}
-        pendingSetting={pendingSetting}
+        pendingSetting={pendingSettings}
         onCommand={controlPlayback}
         onSettings={updateSettings}
         onClose={close}
@@ -712,13 +866,60 @@ function ImportConfirmationModal({ selection, onClose, onStart }) {
   );
 }
 
-function SettingsModal({ preferences, version, pending, onUpdate, onClose }) {
+function SettingsRange({ label, value, min, max, step, disabled, formatValue, onCommit }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = (nextValue) => {
+    const numericValue = Number(nextValue);
+    if (numericValue !== value) onCommit(numericValue);
+  };
+  return (
+    <label className="settings-field slider-field">
+      <span>{label} <strong>{formatValue(draft)}</strong></span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        disabled={disabled}
+        onChange={(event) => setDraft(Number(event.target.value))}
+        onPointerUp={(event) => commit(event.currentTarget.value)}
+        onKeyUp={(event) => commit(event.currentTarget.value)}
+        onBlur={(event) => commit(event.currentTarget.value)}
+      />
+    </label>
+  );
+}
+
+function SettingsModal({ preferences, speech, floatingSettings, version, pending, onUpdateApp, onUpdateSpeech, onUpdateFloating, onClose }) {
   const themes = ["白天", "护眼", "米黄", "夜间"];
+  const edgeVoices = speech.voices.filter((voice) => voice.backend === "edge");
+  const localVoices = speech.voices.filter((voice) => voice.backend === "sapi");
+  const customTextColor = floatingSettings.textColor !== "auto";
+  const isPending = (scope, key) => pending.includes(`${scope}.${key}`);
+  const pickerColor = floatingPickerColor(floatingSettings);
   return (
     <div className="modal-backdrop"><div className="paste-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div className="modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>外观、启动与本地数据</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
-      <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={pending} onClick={() => onUpdate({ theme })}>{theme}</button>)}</div></section>
-      <section className="settings-section"><h3>启动</h3><label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={pending} onChange={(event) => onUpdate({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label></section>
+      <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={isPending("app", "theme")} onClick={() => onUpdateApp({ theme })}>{theme}</button>)}</div></section>
+      <section className="settings-section speech-settings"><h3>朗读设置</h3>
+        <label className="settings-field"><span>朗读音色</span><select value={speech.settings.ttsVoiceId} disabled={isPending("speech", "ttsVoiceId")} onChange={(event) => onUpdateSpeech({ ttsVoiceId: event.target.value })}>
+          <optgroup label="Edge 神经音色（需联网）">{edgeVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}</optgroup>
+          <optgroup label="本地系统音色（离线）">{localVoices.map((voice) => <option key={voice.id || "system-default"} value={voice.id}>{voice.label}</option>)}</optgroup>
+        </select></label>
+        {speech.loadingLocalVoices ? <p className="settings-hint">正在读取 Windows 本地音色…</p> : null}
+        {speech.localVoiceError ? <p className="settings-hint warning">{speech.localVoiceError}</p> : null}
+        <SettingsRange label="语速" min={80} max={400} step={10} value={speech.settings.ttsRate} disabled={isPending("speech", "ttsRate")} formatValue={(value) => `${(value / 200).toFixed(2)}×`} onCommit={(ttsRate) => onUpdateSpeech({ ttsRate })} />
+        <SettingsRange label="句间停顿" min={0} max={1} step={0.05} value={speech.settings.sentenceGapSeconds} disabled={isPending("speech", "sentenceGapSeconds")} formatValue={(value) => `${Number(value).toFixed(2)} 秒`} onCommit={(sentenceGapSeconds) => onUpdateSpeech({ sentenceGapSeconds })} />
+      </section>
+      <section className="settings-section floating-settings-section"><h3>悬浮朗读</h3>
+        <div className="settings-field"><span>悬浮窗背景</span><div className="theme-options compact">{[["light", "浅色"], ["sepia", "米黄"], ["dark", "深色"]].map(([value, label]) => <button key={value} className={floatingSettings.background === value ? "selected" : ""} disabled={isPending("floating", "background")} onClick={() => onUpdateFloating({ background: value })}>{label}</button>)}</div></div>
+        <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.hoverDisplayEnabled} disabled={isPending("floating", "hoverDisplayEnabled")} onChange={(event) => onUpdateFloating({ hoverDisplayEnabled: event.target.checked })} />鼠标移开时显示上一段和下一段（悬停时始终只显示标题、当前段和播放控制）</label>
+        <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.followReaderFont} disabled={isPending("floating", "followReaderFont")} onChange={(event) => onUpdateFloating({ followReaderFont: event.target.checked })} />跟随主阅读器字号（在悬浮正文中滚动滚轮会自动关闭）</label>
+        <div className="settings-field color-setting"><span>朗读字体颜色</span><div><input aria-label="悬浮窗朗读字体颜色" title="选择颜色后立即切换为自定义配色" type="color" value={pickerColor} onChange={(event) => { const patch = floatingTextColorPatch(event.target.value); if (patch) onUpdateFloating(patch); }} /><button className={!customTextColor ? "selected" : ""} onClick={() => onUpdateFloating({ textColor: "auto" })}>自动配色</button><span className="color-setting-value">{customTextColor ? floatingSettings.textColor : "选择颜色即使用"}</span></div></div>
+      </section>
+      <section className="settings-section"><h3>启动</h3><label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label></section>
       <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 DDNovelReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
       <section className="settings-section about-section"><h3>关于</h3><p>多多朗读 {version || "2.0.0"} · Qt WebEngine 桌面版</p></section>
     </div></div>
@@ -738,6 +939,7 @@ function MainApplication() {
   const [bridgeError, setBridgeError] = useState("");
   const [bridgeMode, setBridgeMode] = useState(nativeTransportAvailable ? "native" : "demo");
   const [windowControls, setWindowControls] = useState(EMPTY_CONTROLS);
+  const [windowState, setWindowState] = useState({ isMaximized: false, isFullScreen: false });
   const [capabilities, setCapabilities] = useState(EMPTY_CAPABILITIES);
   const [importState, setImportState] = useState(() => ({ ...EMPTY_IMPORT_STATE }));
   const [importSelection, setImportSelection] = useState(null);
@@ -749,9 +951,11 @@ function MainApplication() {
   const [fontSize, setFontSize] = useState(21);
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
+  const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
   const [appVersion, setAppVersion] = useState("2.0.0");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPending, setSettingsPending] = useState(false);
+  const settingsPendingRef = useRef(new Set());
+  const [settingsPending, setSettingsPending] = useState([]);
   const [readerState, dispatchReader] = useReducer(readerReducer, EMPTY_READER_STATE);
   const readerOpenRequestRef = useRef("");
   const readerSessionRef = useRef("");
@@ -782,6 +986,8 @@ function MainApplication() {
       setBooks(connected.mode === "demo" && qaEmptyLibrary ? [] : connected.initialState.data.library.books);
       setCapabilities(connected.initialState.data.capabilities);
       setAppPreferences(connected.initialState.data.preferences);
+      setSpeechState(connected.initialState.data.speech);
+      setWindowState(connected.initialState.data.window);
       setAppVersion(connected.initialState.data.app.version);
       setWindowControls(connected.controls);
       connected.onBridgeError((raw) => {
@@ -789,6 +995,12 @@ function MainApplication() {
       });
       connected.onAppPreferencesChanged((preferences) => {
         if (active) setAppPreferences(preferences);
+      });
+      connected.onSpeechPreferencesChanged((speech) => {
+        if (active) setSpeechState(speech);
+      });
+      connected.onWindowStateChanged((nextWindowState) => {
+        if (active) setWindowState(nextWindowState);
       });
       connected.onImportProgress((event) => {
         if (!active) return;
@@ -1155,17 +1367,71 @@ function MainApplication() {
       setBridgeError(error.message || "悬浮朗读窗操作失败。");
     }
   };
+  const beginSettingsSave = (scope, patch) => {
+    const ids = settingsPatchIds(scope, patch);
+    if (ids.some((id) => settingsPendingRef.current.has(id))) return null;
+    ids.forEach((id) => settingsPendingRef.current.add(id));
+    setSettingsPending([...settingsPendingRef.current]);
+    return ids;
+  };
+  const finishSettingsSave = (ids) => {
+    ids.forEach((id) => settingsPendingRef.current.delete(id));
+    setSettingsPending([...settingsPendingRef.current]);
+  };
   const updateAppPreferences = async (patch) => {
     const connection = connectionRef.current;
-    if (!connection || settingsPending) return;
-    setSettingsPending(true);
+    if (!connection) return;
+    const pendingIds = beginSettingsSave("app", patch);
+    if (!pendingIds) return;
     try {
       const response = await connection.app.updatePreferences({ patch });
       setAppPreferences(response.data);
     } catch (error) {
       setBridgeError(error.message || "应用设置保存失败。");
     } finally {
-      setSettingsPending(false);
+      finishSettingsSave(pendingIds);
+    }
+  };
+  const updateSpeechPreferences = async (patch) => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    const pendingIds = beginSettingsSave("speech", patch);
+    if (!pendingIds) return;
+    try {
+      const response = await connection.speech.updatePreferences({ patch });
+      setSpeechState(response.data);
+      if (readerDataRef.current) {
+        const nextSettings = { ...readerDataRef.current.settings, ...response.data.settings };
+        readerDataRef.current = { ...readerDataRef.current, settings: nextSettings };
+        dispatchReader({ type: "SETTINGS", settings: nextSettings });
+      }
+    } catch (error) {
+      setBridgeError(error.message || "朗读设置保存失败。");
+    } finally {
+      finishSettingsSave(pendingIds);
+    }
+  };
+  const updateFloatingPreferences = async (patch) => {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    const readerFontSize = readerDataRef.current?.settings?.fontSize;
+    const effectivePatch = patch.followReaderFont === true && Number.isFinite(readerFontSize)
+      ? { ...patch, fontSize: readerFontSize }
+      : patch;
+    const pendingIds = beginSettingsSave("floating", effectivePatch);
+    if (!pendingIds) return;
+    const previousValues = Object.fromEntries(
+      Object.keys(effectivePatch).map((key) => [key, nativeFloatingState?.settings?.[key]]),
+    );
+    setNativeFloatingState((current) => mergeFloatingState(current, effectivePatch));
+    try {
+      const response = await connection.floating.updateSettings({ patch: effectivePatch });
+      setNativeFloatingState(response.data);
+    } catch (error) {
+      setNativeFloatingState((current) => mergeFloatingState(current, previousValues));
+      setBridgeError(error.message || "悬浮朗读设置保存失败。");
+    } finally {
+      finishSettingsSave(pendingIds);
     }
   };
   const toggleDarkMode = () => updateAppPreferences({ theme: appPreferences.colorScheme === "dark" ? "护眼" : "夜间" });
@@ -1212,12 +1478,12 @@ function MainApplication() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [readerState, settingsPending, windowControls, nativeFloatingState]);
+  }, [readerState, windowControls, nativeFloatingState]);
   return (
-    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""} theme-${appPreferences.colorScheme}`} data-theme={appPreferences.theme}>
+    <div className={`prototype-stage ${desktopMode ? "desktop-host" : ""} theme-${appPreferences.colorScheme}`} data-theme={appPreferences.theme} data-window-mode={windowState.isFullScreen ? "fullscreen" : windowState.isMaximized ? "maximized" : "normal"}>
       {desktopMode ? <WindowResizeHandles controls={windowControls} /> : null}
       <div className="mac-window">
-        <MacTitlebar controls={windowControls} desktopMode={desktopMode} />
+        <WindowTitlebar controls={windowControls} desktopMode={desktopMode} windowState={windowState} />
         <div className="app-body">
           <Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} darkMode={appPreferences.colorScheme === "dark"} onToggleDark={toggleDarkMode} onOpenSettings={() => setSettingsOpen(true)} />
           <main className="content-area">
@@ -1232,7 +1498,7 @@ function MainApplication() {
       {floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}
       {pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}
       {importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}
-      {settingsOpen && <SettingsModal preferences={appPreferences} version={appVersion} pending={settingsPending} onUpdate={updateAppPreferences} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal preferences={appPreferences} speech={speechState} floatingSettings={nativeFloatingState?.settings || EMPTY_FLOATING_STATE.settings} version={appVersion} pending={settingsPending} onUpdateApp={updateAppPreferences} onUpdateSpeech={updateSpeechPreferences} onUpdateFloating={updateFloatingPreferences} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

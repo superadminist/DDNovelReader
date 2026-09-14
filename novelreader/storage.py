@@ -6,16 +6,11 @@ import os
 import threading
 import time
 
+from .paths import ensure_data_dir
+
 
 def data_dir():
-    base = os.environ.get("DOUBAO_NOVEL_DATA")
-    if base:
-        os.makedirs(base, exist_ok=True)
-        return base
-    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-    d = os.path.join(appdata, "DDNovelReader")
-    os.makedirs(d, exist_ok=True)
-    return d
+    return os.fspath(ensure_data_dir())
 
 
 def cache_dir():
@@ -112,14 +107,17 @@ DEFAULT_SETTINGS = {
     "paragraph_mode": 1,       # 压缩空行：1 不压缩 / 2 合并为一行 / 3 清理所有行
     "first_line_indent": True, # 段落首行缩进二个字
     "tts_sentence_gap": 0.10,  # 句子停顿间隔（秒）
-    "tts_cache_dir": "",       # 自定义整本语音缓存根目录（空=默认 %APPDATA%\\DDNovelReader\\tts_cache）
+    "tts_cache_dir": "",       # 自定义整本语音缓存根目录（空=默认 <数据目录>\\tts_cache）
     "floating_reader_geometry": "",
     "floating_reader_topmost": True,
     "floating_reader_opacity": 0.92,
+    "floating_reader_background_opacity": 0.92,
     "floating_reader_font_size": 22,
     "floating_reader_follow_font": True,
     "floating_reader_background": "light",
     "floating_reader_bilingual": False,
+    "floating_reader_text_color": "auto",
+    "floating_reader_hover_display": True,
     "library_view_mode": "grid",
 }
 

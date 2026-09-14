@@ -130,57 +130,103 @@ def synth_audio(text, voice, rate=200):
 class _EdgePrefetch:
     """后台批量预取后续句子的音频，缓存最多 MAX_AHEAD 句，句间零卡顿。
 
-    生产线程从 start_off 起按句子顺序合成，放入有界队列（上限 MAX_AHEAD）。
-    队列满则生产者阻塞，天然把预取量限制在 MAX_AHEAD 内，避免过量占用网络与内存。
+    Multiple workers reserve sentences in order and synthesize them concurrently.
+    Results are keyed by clean-text offset, so playback still consumes them in
+    exact reading order even when a later network request finishes first.
     """
 
     MAX_AHEAD = 30
+    WORKERS = 3
 
     def __init__(self, synth_fn, content, start_off, limit=MAX_AHEAD):
         self._synth = synth_fn
         self._content = content
         self._limit = limit
-        self._queue = queue.Queue(maxsize=limit)
         self._lock = threading.Lock()
+        self._ready = threading.Condition()
+        self._results = {}
+        self._slots = threading.Semaphore(limit)
         self._next_off = start_off
         self._stopped = threading.Event()
-        threading.Thread(target=self._run, daemon=True).start()
+        self._workers = [
+            threading.Thread(target=self._run, daemon=True)
+            for _ in range(min(self.WORKERS, limit))
+        ]
+        for worker in self._workers:
+            worker.start()
 
     def _run(self):
         try:
             while not self._stopped.is_set():
+                if not self._slots.acquire(timeout=0.2):
+                    continue
                 with self._lock:
                     off = self._next_off
-                text, nxt, _ = SpeechController._next_chunk(self._content, off)
-                if not text or nxt <= off:
-                    break
-                with self._lock:
+                    text, nxt, _ = SpeechController._next_chunk(self._content, off)
+                    if not text or nxt <= off:
+                        self._slots.release()
+                        return
                     self._next_off = nxt
                 try:
                     audio = self._synth(text)
                 except Exception:
                     audio = None
-                if audio is None:
-                    continue
-                item = (text, audio)
-                while not self._stopped.is_set():
-                    try:
-                        self._queue.put(item, timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
+                with self._ready:
+                    self._results[off] = (text, audio)
+                    self._ready.notify_all()
         except Exception:
             pass
 
     def get(self, timeout=None):
         """取一句已预取的音频，返回 (text, audio)；超时返回 None。"""
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._ready:
+            while not self._stopped.is_set():
+                if self._results:
+                    off = min(self._results)
+                    result = self._results.pop(off)
+                    self._slots.release()
+                    self._ready.notify_all()
+                    return result
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return None
+                self._ready.wait(timeout=remaining)
+        return None
+
+    def get_expected(self, expected_off, expected_text, timeout=None):
+        """Wait for one exact sentence while retaining out-of-order results.
+
+        Returns ``(ready, audio)``.  ``ready`` is true for both successful and
+        failed synthesis, so a failed network request never becomes a phantom
+        queue timeout.  Later sentences remain buffered until their turn.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._ready:
+            while not self._stopped.is_set():
+                stale = [off for off in self._results if off < expected_off]
+                for off in stale:
+                    self._results.pop(off, None)
+                    self._slots.release()
+                if expected_off in self._results:
+                    text, audio = self._results.pop(expected_off)
+                    self._slots.release()
+                    self._ready.notify_all()
+                    return text == expected_text, audio if text == expected_text else None
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False, None
+                self._ready.wait(timeout=remaining)
+        return False, None
+
+    def ready_count(self):
+        with self._ready:
+            return len(self._results)
 
     def close(self):
         self._stopped.set()
+        with self._ready:
+            self._ready.notify_all()
 
 
 class WholeBookCacher:
@@ -588,7 +634,15 @@ class SpeechController:
         self._edge_voice = "zh-CN-XiaoxiaoNeural"
         self._edge_prefetch = None
         self._edge_fail_posted = False
+        self._edge_session_fallback = False
+        self._edge_prime_token = 0
+        self._edge_prime_key = None
+        self._edge_prime_audio = None
+        self._edge_prime_event = None
+        self._edge_prime_prefetch = None
+        self._warm_sapi_requested = False
         self._tts_cache_dir = None
+        self._book_id = "book"
         # 整本语音缓存：按 book_id 管理，每本书独立缓存器，互不阻塞（支持多书同时缓存）
         self._book_cachers = {}
         self._book_cachers_lock = threading.Lock()
@@ -647,10 +701,12 @@ class SpeechController:
 
     # ---------- 对外设置（只存值，工作线程应用） ----------
     def set_voice(self, voice_id):
-        if not voice_id:
-            return
         with self._cv:
-            if "HKEY" in voice_id or "TTS_MS" in voice_id or "SOFTWARE" in voice_id:
+            previous = (self._backend, self._pending_voice, self._edge_voice)
+            if not voice_id:
+                self._backend = "sapi"
+                self._pending_voice = None
+            elif "HKEY" in voice_id or "TTS_MS" in voice_id or "SOFTWARE" in voice_id:
                 # 系统 SAPI 语音
                 self._backend = "sapi"
                 self._pending_voice = voice_id
@@ -658,10 +714,15 @@ class SpeechController:
                 # Edge 神经语音（zh-CN-XiaoxiaoNeural 等）
                 self._backend = "edge"
                 self._edge_voice = voice_id
+            if previous != (self._backend, self._pending_voice, self._edge_voice):
+                self._invalidate_edge_prime_locked()
 
     def set_rate(self, rate):
         with self._cv:
-            self._rate = int(rate)
+            rate = int(rate)
+            if rate != self._rate:
+                self._rate = rate
+                self._invalidate_edge_prime_locked()
 
     def set_sentence_gap(self, gap):
         """句子之间的停顿间隔（秒），默认 0.10。"""
@@ -690,7 +751,7 @@ class SpeechController:
         if pf is None:
             return None
         try:
-            return (pf._queue.qsize(), _EdgePrefetch.MAX_AHEAD)
+            return (pf.ready_count(), _EdgePrefetch.MAX_AHEAD)
         except Exception:  # pragma: no cover
             return None
 
@@ -703,7 +764,128 @@ class SpeechController:
             self._size_dirty = False
 
     def set_book_id(self, book_id):
-        self._book_id = str(book_id or "book")
+        with self._cv:
+            book_id = str(book_id or "book")
+            if book_id != self._book_id:
+                self._book_id = book_id
+                self._invalidate_edge_prime_locked()
+
+    def prepare(self, book, chapter_idx, char_offset):
+        """Warm the selected backend for the next play without changing state.
+
+        SAPI initialization stays on the one speech worker.  Edge synthesis is
+        single-flight and keyed by book, voice, rate and exact sentence, so a
+        play click can reuse the already-running request instead of starting a
+        duplicate network call.
+        """
+        if book is None or not getattr(book, "chapters", None):
+            return
+        self._ensure_thread()
+        with self._cv:
+            backend = self._backend
+            if backend == "sapi":
+                self._warm_sapi_requested = True
+                self._cv.notify_all()
+                return
+            voice = self._edge_voice
+            rate = int(self._rate)
+            book_id = self._book_id
+        try:
+            ci = max(0, min(int(chapter_idx), len(book.chapters) - 1))
+            content, cmap = book.chapters[ci].tts_content()
+            original = book.chapters[ci].content
+            clean_offset = (
+                orig_to_clean(cmap, int(char_offset))
+                if int(char_offset) < len(original)
+                else len(content)
+            )
+            text, next_clean, sentence_start = self._next_chunk(content, clean_offset)
+            if not text:
+                return
+            original_offset = clean_to_orig(
+                cmap, clean_offset + sentence_start, len(original)
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return
+        key = (book_id, voice, rate, ci, original_offset, text)
+        with self._cv:
+            if self._edge_prime_key == key and self._edge_prime_event is not None:
+                return
+            self._invalidate_edge_prime_locked()
+            token = self._edge_prime_token
+            ready = threading.Event()
+            self._edge_prime_key = key
+            self._edge_prime_event = ready
+            self._edge_prime_prefetch = _EdgePrefetch(
+                self._edge_synthesize,
+                content,
+                next_clean,
+                _EdgePrefetch.MAX_AHEAD,
+            )
+        cached = self._cached_audio(ci, original_offset)
+        if cached:
+            with self._cv:
+                if token == self._edge_prime_token and key == self._edge_prime_key:
+                    self._edge_prime_audio = cached
+                ready.set()
+            return
+        threading.Thread(
+            target=self._prime_edge_sentence,
+            args=(token, key, text, ready),
+            name="dd-edge-prime",
+            daemon=True,
+        ).start()
+
+    def _prime_edge_sentence(self, token, key, text, ready):
+        try:
+            audio = self._edge_synthesize(text)
+        except Exception:
+            audio = None
+        with self._cv:
+            if token == self._edge_prime_token and key == self._edge_prime_key:
+                self._edge_prime_audio = audio
+            ready.set()
+
+    def _invalidate_edge_prime_locked(self):
+        prefetch = self._edge_prime_prefetch
+        self._edge_prime_token += 1
+        self._edge_prime_key = None
+        self._edge_prime_audio = None
+        self._edge_prime_event = None
+        self._edge_prime_prefetch = None
+        if prefetch is not None:
+            try:
+                prefetch.close()
+            except Exception:
+                pass
+
+    def _edge_prime_result(self, ci, off, text, timeout=0.10):
+        with self._cv:
+            key = (
+                self._book_id,
+                self._edge_voice,
+                int(self._rate),
+                int(ci),
+                int(off),
+                text,
+            )
+            if key != self._edge_prime_key or self._edge_prime_event is None:
+                return False, False, None, None
+            token = self._edge_prime_token
+            ready = self._edge_prime_event
+        ready.wait(timeout=max(0.0, float(timeout)))
+        with self._cv:
+            if token != self._edge_prime_token or key != self._edge_prime_key:
+                return False, False, None, None
+            if not ready.is_set():
+                return True, False, None, None
+            audio = self._edge_prime_audio
+            prefetch = self._edge_prime_prefetch
+            self._edge_prime_key = None
+            self._edge_prime_audio = None
+            self._edge_prime_event = None
+            self._edge_prime_prefetch = None
+            return True, True, audio, prefetch
 
     def _cacher_for(self, book_id=None):
         """按 book_id 取缓存器；未指定时用当前书 id。"""
@@ -1240,6 +1422,7 @@ class SpeechController:
             self._book = None
             self._state = "idle"
             self._gen += 1
+            self._invalidate_edge_prime_locked()
             self._cv.notify_all()
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -1265,15 +1448,33 @@ class SpeechController:
         try:
             while True:
                 with self._cv:
-                    while self._book is None and not self._closed:
+                    while (
+                        self._book is None
+                        and not self._warm_sapi_requested
+                        and not self._closed
+                    ):
                         self._cv.wait()
                     if self._closed:
                         return
-                    book = self._book
-                    ci = self._ci
-                    off = self._off
-                    gen = self._gen
-                    self._state = "playing"
+                    warm_sapi = self._book is None and self._warm_sapi_requested
+                    if warm_sapi:
+                        self._warm_sapi_requested = False
+                    else:
+                        book = self._book
+                        ci = self._ci
+                        off = self._off
+                        gen = self._gen
+                        self._state = "playing"
+                if warm_sapi:
+                    try:
+                        self._ensure_engine()
+                        if self._engine is not None:
+                            self._sync_props()
+                    except Exception:
+                        # A failed warm-up is retried through the normal speak
+                        # path, which already reports a structured error.
+                        pass
+                    continue
                 try:
                     self._run_session(book, ci, off, gen)
                 except Exception as e:  # pragma: no cover
@@ -1345,6 +1546,7 @@ class SpeechController:
         chapters = book.chapters
         self._edge_prefetch = None
         self._edge_fail_posted = False
+        self._edge_session_fallback = False
         try:
             while True:
                 if self._should_stop(gen):
@@ -1379,22 +1581,28 @@ class SpeechController:
                 actual_clean_off = clean_off + sent_start
                 orig_off = clean_to_orig(cmap, actual_clean_off, len(orig_content))
                 next_orig = clean_to_orig(cmap, next_clean, len(orig_content))
-                self._post(
-                    {
-                        "type": "sentence_start",
-                        "chapter_idx": ci,
-                        "char_offset": orig_off,
-                        "char_end": next_orig,
-                        "text": text,
-                    },
-                    gen,
-                )
+                start_event = {
+                    "type": "sentence_start",
+                    "chapter_idx": ci,
+                    "char_offset": orig_off,
+                    "char_end": next_orig,
+                    "text": text,
+                }
                 with self._cv:
                     backend = self._backend
                 if backend == "edge":
-                    ok = self._speak_edge(text, gen, ci, orig_off, clean_text, next_clean)
+                    ok = self._speak_edge(
+                        text,
+                        gen,
+                        ci,
+                        orig_off,
+                        actual_clean_off,
+                        clean_text,
+                        next_clean,
+                        start_event,
+                    )
                 else:
-                    ok = self._speak_sapi(text, gen)
+                    ok = self._speak_sapi(text, gen, start_event)
                 if not ok:
                     self._fail_session(gen)
                     return
@@ -1470,21 +1678,32 @@ class SpeechController:
             return content[cursor:cut], cut, cursor - offset
 
     # ---------- SAPI 后端 ----------
-    def _speak_sapi(self, text, gen):
+    def _speak_sapi(self, text, gen, start_event=None):
         """系统语音朗读一句，阻塞到结束或被暂停/停止打断。"""
         if not text:
             return False
         done = threading.Event()
+        started = threading.Event()
+
+        def _on_started(name=None, **kw):
+            if started.is_set():
+                return
+            started.set()
+            if start_event is not None:
+                self._post(dict(start_event), gen)
 
         def _on_finished(name=None, completed=None, **kw):
             done.set()
 
+        started_token = None
+        finished_token = None
         try:
             self._ensure_engine()
             if self._engine is None:
                 raise RuntimeError("系统语音不可用")
             self._sync_props()
-            self._engine.connect("finished-utterance", _on_finished)
+            started_token = self._engine.connect("started-utterance", _on_started)
+            finished_token = self._engine.connect("finished-utterance", _on_finished)
             self._engine.say(text)
             while not done.is_set():
                 if self._should_stop(gen):
@@ -1512,10 +1731,13 @@ class SpeechController:
             )
             return False
         finally:
-            try:
-                self._engine.disconnect({"topic": "finished-utterance", "cb": _on_finished})
-            except Exception:
-                pass
+            for token in (started_token, finished_token):
+                if token is None:
+                    continue
+                try:
+                    self._engine.disconnect(token)
+                except Exception:
+                    pass
         return True
 
     # ---------- Edge 后端 ----------
@@ -1525,68 +1747,95 @@ class SpeechController:
             rate = self._rate
         return synth_audio(text, voice, rate)
 
-    def _speak_edge(self, text, gen, ci, off, content, next_off):
+    def _speak_edge(
+        self,
+        text,
+        gen,
+        ci,
+        off,
+        clean_off,
+        content,
+        next_off,
+        start_event=None,
+    ):
         """Edge 语音：整本缓存命中直接播放；否则批量预取/按需合成；失败回退系统语音。"""
-        cached = self._cached_audio(ci, off)
-        if cached:
-            return self._speak_edge_play(cached, gen)
-        if self._edge_prefetch is None:
-            # 首句：直接生成，同时启动后续最多 30 句的批量预取
+        if self._edge_session_fallback:
+            return self._speak_sapi(text, gen, start_event)
+        primed, prime_ready, audio, prime_prefetch = self._edge_prime_result(
+            ci, off, text
+        )
+        while primed and not prime_ready and not self._should_stop(gen):
+            primed, prime_ready, audio, prime_prefetch = self._edge_prime_result(
+                ci, off, text
+            )
+        if self._should_stop(gen):
+            return False
+        if prime_prefetch is not None:
+            self._edge_prefetch = prime_prefetch
+        if not primed:
+            audio = self._cached_audio(ci, off)
+        if audio:
+            if self._edge_prefetch is None:
+                self._edge_prefetch = _EdgePrefetch(
+                    self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
+                )
+            return self._speak_edge_play(audio, gen, start_event)
+        if primed:
+            # The single-flight preparation already failed.  Do not perform
+            # the same slow request again before falling back to SAPI.
+            audio = None
+        elif self._edge_prefetch is None:
+            # No idle prime exists (for example, play was requested immediately
+            # after binding).  Start lookahead before the current network call
+            # so following sentences synthesize during the first sentence.
+            self._edge_prefetch = _EdgePrefetch(
+                self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
+            )
             try:
                 audio = self._edge_synthesize(text)
             except Exception:
                 audio = None
-            self._edge_prefetch = _EdgePrefetch(
-                self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
-            )
         else:
             audio = None
-            item = None
-            try:
-                item = self._edge_prefetch.get(timeout=10)
-            except Exception:
-                item = None
-            if item:
-                ptext, paudio = item
-                if ptext == text:
-                    audio = paudio
-            if audio is None:
-                # 预取未就绪（网络慢）或句序失配（罕见竞态）：直接生成本句
-                try:
-                    audio = self._edge_synthesize(text)
-                except Exception:
-                    audio = None
-                # 重建预取缓冲，保证后续句仍从正确位置预取
-                try:
-                    self._edge_prefetch.close()
-                except Exception:
-                    pass
-                self._edge_prefetch = _EdgePrefetch(
-                    self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
+            while not self._should_stop(gen):
+                ready, audio = self._edge_prefetch.get_expected(
+                    clean_off,
+                    text,
+                    timeout=0.10,
                 )
+                if ready:
+                    break
+                with self._cv:
+                    if self._state == "paused":
+                        self._cv.wait()
+            if self._should_stop(gen):
+                return False
         if audio:
-            return self._speak_edge_play(audio, gen)
-        # 联网失败：回退系统语音（仅提示一次）
+            return self._speak_edge_play(audio, gen, start_event)
+        # A real synthesis failure keeps the existing fallback behavior, but
+        # locks the remainder of this session to SAPI to prevent voice flapping.
+        self._edge_session_fallback = True
         if not self._edge_fail_posted:
             self._edge_fail_posted = True
             self._post(
                 {
                     "type": "error",
                     "code": "EDGE_OFFLINE_FALLBACK",
-                    "message": "联网语音生成失败，本句已用系统语音朗读",
+                    "message": "联网语音生成失败，本次朗读将继续使用系统语音",
                     "retryable": True,
                     "fallback_backend": "sapi",
                 },
                 gen,
             )
-        try:
-            self._edge_prefetch.close()
-        except Exception:
-            pass
-        self._edge_prefetch = None
-        return self._speak_sapi(text, gen)
+        if self._edge_prefetch is not None:
+            try:
+                self._edge_prefetch.close()
+            except Exception:
+                pass
+            self._edge_prefetch = None
+        return self._speak_sapi(text, gen, start_event)
 
-    def _speak_edge_play(self, audio, gen):
+    def _speak_edge_play(self, audio, gen, start_event=None):
         """用 Windows MCI（winmm.dll）播放预生成的 MP3，支持暂停/停止（零第三方依赖）。"""
         if not audio:
             return False
@@ -1601,6 +1850,8 @@ class SpeechController:
             _mci_set_volume(self._volume)  # MCI 层音量（回退）
             _set_process_volume(self._volume)  # Core Audio 进程音量（主要）
             _mci_play()
+            if start_event is not None:
+                self._post(dict(start_event), gen)
             while _mci_playing():
                 with self._cv:
                     if self._state == "idle" or self._book is None or self._gen != gen:

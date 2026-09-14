@@ -18,6 +18,7 @@ class FakeSpeechController:
         self._events = queue.Queue()
         self.book_id = ""
         self.starts = []
+        self.prepares = []
         self.shutdown_timeout = None
 
     def generation(self):
@@ -28,6 +29,9 @@ class FakeSpeechController:
 
     def set_book_id(self, book_id):
         self.book_id = book_id
+
+    def prepare(self, book, chapter_index, char_offset):
+        self.prepares.append((chapter_index, char_offset))
 
     def start(self, book, chapter_index, char_offset):
         self._generation += 1
@@ -114,7 +118,7 @@ class PlaybackServiceTests(unittest.TestCase):
             set(event),
             {"schemaVersion", "sessionId", "bookId", "sequence", "commandId", "reason", "playback", "error"},
         )
-        self.assertEqual(event["schemaVersion"], 1)
+        self.assertEqual(event["schemaVersion"], 2)
         self.assertEqual(event["sessionId"], "reader-1")
         self.assertEqual(event["playback"]["sentence"]["endOffset"], 4)
 
@@ -133,6 +137,46 @@ class PlaybackServiceTests(unittest.TestCase):
         self.assertEqual(context["current"]["text"], "第一句。")
         self.assertEqual(context["next"]["text"], "第二句！")
         self.assertEqual(set(self.service._sentence_cache), {0})
+
+    def test_binding_and_idle_navigation_prepare_the_current_position(self):
+        self.assertEqual(self.speech.prepares, [(0, 0)])
+
+        self.service.set_position(1, 2)
+
+        self.assertEqual(self.speech.prepares[-1], (1, 2))
+
+    def test_sentence_done_does_not_advance_the_visible_floating_lyric(self):
+        self.service.control("play", "play-1")
+        generation = self.speech.generation()
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 0,
+            "char_end": 4,
+            "text": "第一句。",
+        })
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "sentence_done",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 4,
+        })
+        self.service.drain_events()
+
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第一句。")
+
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 4,
+            "char_end": 8,
+            "text": "第二句！",
+        })
+        self.service.drain_events()
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第二句！")
 
     def test_stale_generation_is_discarded_after_restart(self):
         self.service.control("play", "play-1")
@@ -262,7 +306,10 @@ class SpeechControllerContractTests(unittest.TestCase):
 
     def test_events_include_generation_and_original_end_offset(self):
         controller = SpeechController()
-        controller._speak_sapi = lambda text, generation: True
+        def speak(text, generation, start_event=None):
+            controller._post(dict(start_event), generation)
+            return True
+        controller._speak_sapi = speak
         book = make_book("第一句。。。 😀 第二句。", "")
 
         generation = controller.start(book, 0, 0)
@@ -282,7 +329,10 @@ class SpeechControllerContractTests(unittest.TestCase):
         controller = SpeechController()
         controller.set_voice("zh-CN-XiaoxiaoNeural")
         controller._edge_synthesize = lambda text: None
-        controller._speak_sapi = lambda text, generation: True
+        def speak(text, generation, start_event=None):
+            controller._post(dict(start_event), generation)
+            return True
+        controller._speak_sapi = speak
         book = make_book("第一句。", "")
 
         generation = controller.start(book, 0, 0)
@@ -302,24 +352,30 @@ class SpeechControllerContractTests(unittest.TestCase):
 
         class FakeEngine:
             def __init__(self):
-                self.callback = None
+                self.callbacks = {}
 
             def startLoop(self, useDriverLoop=False):
                 calls.append(("startLoop", threading.get_ident()))
 
             def connect(self, topic, callback):
-                self.callback = callback
+                token = {"topic": topic, "cb": callback}
+                self.callbacks[topic] = callback
+                return token
 
             def disconnect(self, token):
-                pass
+                self.callbacks.pop(token["topic"], None)
 
             def say(self, text):
-                pass
+                calls.append(("say", threading.get_ident()))
 
             def iterate(self):
-                callback, self.callback = self.callback, None
-                if callback:
-                    callback()
+                started = self.callbacks.pop("started-utterance", None)
+                if started:
+                    calls.append(("startedCallback", threading.get_ident()))
+                    started()
+                finished = self.callbacks.pop("finished-utterance", None)
+                if finished:
+                    finished()
 
             def setProperty(self, name, value):
                 pass
@@ -341,6 +397,19 @@ class SpeechControllerContractTests(unittest.TestCase):
         main_thread = threading.get_ident()
         with mock.patch("novelreader.tts_engine.pyttsx3", FakePyttsx3):
             controller = SpeechController()
+            original_post = controller._post
+
+            def track_post(event, generation):
+                if event.get("type") == "sentence_start":
+                    calls.append(("sentenceStart", threading.get_ident()))
+                return original_post(event, generation)
+
+            controller._post = track_post
+            controller.prepare(make_book("第一句。", ""), 0, 0)
+            deadline = time.time() + 1
+            while time.time() < deadline and not any(name == "init" for name, _ in calls):
+                time.sleep(0.01)
+            self.assertTrue(any(name == "init" for name, _ in calls))
             controller.start(make_book("第一句。", ""), 0, 0)
             self._wait_for_stop(controller)
             self.assertTrue(controller.shutdown())
@@ -349,7 +418,174 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertEqual(len(worker_threads), 1)
         self.assertNotIn(main_thread, worker_threads)
         self.assertIn("init", [name for name, _ in calls])
+        self.assertEqual([name for name, _ in calls].count("init"), 1)
+        event_order = [name for name, _ in calls]
+        self.assertLess(event_order.index("say"), event_order.index("startedCallback"))
+        self.assertLess(
+            event_order.index("startedCallback"), event_order.index("sentenceStart")
+        )
         self.assertIn("endLoop", [name for name, _ in calls])
+
+    def test_edge_prepare_is_single_flight_and_reused_by_play(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        controller.set_book_id("book-1")
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def synthesize(text):
+            calls.append(text)
+            started.set()
+            release.wait(1)
+            return b"prepared-audio"
+
+        def play(audio, generation, start_event=None):
+            controller._post(dict(start_event), generation)
+            return True
+
+        controller._edge_synthesize = synthesize
+        controller._speak_edge_play = play
+        book = make_book("第一句。", "")
+        controller.prepare(book, 0, 0)
+        self.assertTrue(started.wait(1))
+        generation = controller.start(book, 0, 0)
+        time.sleep(0.05)
+        self.assertFalse(any(
+            event["type"] == "sentence_start" for event in controller.drain()
+        ))
+        release.set()
+        self._wait_for_stop(controller)
+        events = controller.drain()
+        controller.shutdown()
+
+        self.assertEqual(calls, ["第一句。"])
+        starts = [event for event in events if event["type"] == "sentence_start"]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]["generation"], generation)
+
+    def test_edge_prepare_starts_current_and_lookahead_together(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        started = []
+        started_lock = threading.Lock()
+        four_started = threading.Event()
+        release = threading.Event()
+
+        def synthesize(text):
+            with started_lock:
+                started.append(text)
+                if len(started) >= 4:
+                    four_started.set()
+            release.wait(1)
+            return text.encode("utf-8")
+
+        controller._edge_synthesize = synthesize
+        controller.prepare(make_book("第一句。第二句！第三句？第四句。", ""), 0, 0)
+        try:
+            self.assertTrue(four_started.wait(0.5))
+            self.assertEqual(set(started[:4]), {
+                "第一句。", "第二句！", "第三句？", "第四句。",
+            })
+        finally:
+            release.set()
+            controller.shutdown()
+
+    def test_edge_continuation_waits_for_the_inflight_voice_without_duplicate_synthesis(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        observed = {}
+
+        class InflightPrefetch:
+            def __init__(self):
+                self.calls = 0
+
+            def get_expected(self, clean_off, text, timeout=None):
+                self.calls += 1
+                observed["request"] = (clean_off, text, timeout)
+                return (self.calls >= 2), b"edge-second" if self.calls >= 2 else None
+
+            def close(self):
+                pass
+
+        prefetch = InflightPrefetch()
+        controller._edge_prefetch = prefetch
+        controller._edge_synthesize = lambda text: self.fail(
+            "a late continuation must not start a duplicate network synthesis"
+        )
+        controller._speak_sapi = lambda text, generation, start_event=None: self.fail(
+            "an in-flight Edge continuation must not change voices"
+        )
+        controller._speak_edge_play = lambda audio, generation, start_event=None: audio == b"edge-second"
+        controller._book = make_book()
+        controller._state = "playing"
+        controller._gen = 7
+
+        result = controller._speak_edge(
+            "第二句！", 7, 0, 4, 4, "第一句。第二句！", 8
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(prefetch.calls, 2)
+        self.assertEqual(observed["request"], (4, "第二句！", 0.10))
+        self.assertEqual(controller.drain(), [])
+
+    def test_edge_prefetch_synthesizes_ahead_concurrently_and_consumes_in_order(self):
+        release = threading.Event()
+        three_started = threading.Event()
+        started = []
+        lock = threading.Lock()
+
+        def synthesize(text):
+            with lock:
+                started.append(text)
+                if len(started) >= 3:
+                    three_started.set()
+            release.wait(1)
+            return text.encode("utf-8")
+
+        prefetch = __import__(
+            "novelreader.tts_engine", fromlist=["_EdgePrefetch"]
+        )._EdgePrefetch(synthesize, "第一句。第二句！第三句？", 0, 5)
+        try:
+            self.assertTrue(three_started.wait(0.5))
+            release.set()
+            for offset, text in ((0, "第一句。"), (4, "第二句！"), (8, "第三句？")):
+                ready, audio = prefetch.get_expected(offset, text, timeout=1)
+                self.assertTrue(ready)
+                self.assertEqual(audio, text.encode("utf-8"))
+        finally:
+            prefetch.close()
+
+    def test_edge_hard_failure_falls_back_once_without_flapping_back(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        sapi_calls = []
+
+        class FailedPrefetch:
+            calls = 0
+
+            def get_expected(self, clean_off, text, timeout=None):
+                self.calls += 1
+                return True, None
+
+            def close(self):
+                pass
+
+        prefetch = FailedPrefetch()
+        controller._edge_prefetch = prefetch
+        controller._speak_sapi = lambda text, generation, start_event=None: sapi_calls.append(text) or True
+        controller._book = make_book()
+        controller._state = "playing"
+        controller._gen = 9
+
+        self.assertTrue(controller._speak_edge("第二句！", 9, 0, 4, 4, "", 8))
+        self.assertTrue(controller._speak_edge("第三句？", 9, 0, 8, 8, "", 12))
+
+        self.assertEqual(prefetch.calls, 1)
+        self.assertEqual(sapi_calls, ["第二句！", "第三句？"])
+        errors = [event for event in controller.drain() if event["type"] == "error"]
+        self.assertEqual(len(errors), 1)
 
 
 if __name__ == "__main__":

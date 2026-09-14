@@ -9,6 +9,7 @@ import sys
 def main(argv: list[str] | None = None) -> int:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
+        from .paths import ensure_data_dir
         from .qt_host import DesktopWindow, frontend_index_path
     except ImportError as exc:
         print(
@@ -21,6 +22,18 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("多多朗读")
     app.setOrganizationName("DDNovelReader")
+
+    try:
+        ensure_data_dir()
+    except OSError as exc:
+        QMessageBox.critical(
+            None,
+            "多多朗读",
+            "无法在安装目录创建或迁移 data 数据文件夹。\n"
+            "请重新安装到当前用户拥有写入权限的路径。\n\n"
+            f"{exc}",
+        )
+        return 4
 
     index_path = frontend_index_path()
     if not index_path.is_file():

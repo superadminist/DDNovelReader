@@ -39,16 +39,18 @@ Qt 主窗口 ───────┴────── 独立 Qt 悬浮窗
 
 ## 用户数据与隐私
 
-默认数据位置：
+安装版数据位置（安装目录由用户在安装向导中选择）：
 
-- 书架、设置和阅读进度：`%APPDATA%\DDNovelReader\library.json`
-- 正文缓存：`%APPDATA%\DDNovelReader\cache\`
-- 导入源文件备份：`%APPDATA%\DDNovelReader\cache\sources\`
-- 语音缓存：`%APPDATA%\DDNovelReader\tts_cache\`
+- 书架、设置和阅读进度：`<安装目录>\data\library.json`
+- 正文缓存：`<安装目录>\data\cache\`
+- 导入源文件备份：`<安装目录>\data\cache\sources\`
+- 语音缓存：`<安装目录>\data\tts_cache\`
+
+安装版首次启动且 `<安装目录>\data` 不存在时，会把旧版 `%APPDATA%\DDNovelReader` 完整复制到新位置，旧目录不会删除。源码运行仍使用 `%APPDATA%\DDNovelReader`；测试可继续通过 `DOUBAO_NOVEL_DATA` 指定隔离目录。
 
 应用不会上传书架、正文或阅读进度。只有选用 Edge 在线语音时，朗读文本会按 Edge TTS 的工作方式发送给该服务；本地 SAPI5 不需要网络。
 
-升级到 2.0 不要求手工迁移 `library.json`。设置更新会保留现有书籍和未知字段。建议在验证新版本前自行备份整个 `%APPDATA%\DDNovelReader` 目录；不要把真实书架、受版权保护的样书或本地缓存提交到 Git。
+升级安装不会覆盖安装目录中的 `data`，卸载也默认保留它。设置更新会保留现有书籍和未知字段。建议升级前备份 `<安装目录>\data`；不要把真实书架、受版权保护的样书或本地缓存提交到 Git。
 
 ## 使用
 
@@ -130,7 +132,7 @@ npm.cmd --prefix prototype run build
 
 ## 打包
 
-运行以下脚本。它会检查 Node.js 版本、重新构建离线前端、安装固定版本的 PyInstaller，并使用收敛后的 DLL 搜索路径生成 one-file EXE：
+先安装 Inno Setup 6，再运行以下脚本。它会检查 Node.js 和 Inno Setup、重新构建离线前端、安装固定版本的 PyInstaller，生成快速启动版、单文件兼容版和 Windows 安装包：
 
 ```bat
 build.bat
@@ -143,7 +145,7 @@ build.bat
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm "多多朗读.spec"
 ```
 
-目标产物为 `dist\多多朗读.exe`。发布前必须实际启动该 EXE，并验证 WebEngine 静态资源、导入/阅读、窗口退出清理，以及进程树中不存在 Node、Vite 开发服务器或外部 Python 解释器。仅仅“PyInstaller 构建成功”不等于桌面验收通过。
+推荐发布产物为 `dist\installer\多多朗读-安装包-2.0.0.exe`。安装向导允许选择安装路径和是否创建桌面图标，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\DDNovelReader`，不需要管理员权限。发布前必须实际完成安装、首次数据迁移、覆盖升级和卸载保留数据验证，并检查 WebEngine 静态资源、导入/阅读、窗口退出清理，以及进程树中不存在 Node、Vite 开发服务器或外部 Python 解释器。仅仅“构建成功”不等于桌面验收通过。
 
 ## 目录结构
 
@@ -162,6 +164,7 @@ DDNovelReader/
 │  ├─ tests/                     # Bridge / Sites 测试
 │  └─ dist/client/               # Qt 加载的前端构建产物
 ├─ tests/                        # Python、Qt、性能与真实桌面验收
+├─ installer/DDNovelReader.iss   # Inno Setup 安装器定义
 ├─ requirements.txt
 ├─ run.bat
 ├─ build.bat

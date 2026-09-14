@@ -112,13 +112,24 @@ class CdpClient {
 }
 
 async function attach(target) {
-  const client = new CdpClient(target.webSocketDebuggerUrl);
-  client.targetId = target.id;
-  await client.connect();
-  await client.call("Runtime.enable");
-  await client.call("Log.enable");
-  await client.call("Page.enable");
-  return client;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const refreshed = (await targets()).find((item) => item.id === target.id) || target;
+    const client = new CdpClient(refreshed.webSocketDebuggerUrl);
+    client.targetId = refreshed.id;
+    try {
+      await client.connect();
+      await client.call("Runtime.enable");
+      await client.call("Log.enable");
+      await client.call("Page.enable");
+      return client;
+    } catch (error) {
+      lastError = error;
+      client.close();
+      if (attempt < 2) await sleep(350);
+    }
+  }
+  throw new Error(`Unable to initialize CDP target ${target.id}: ${lastError?.message || "unknown error"}`);
 }
 
 async function evaluate(client, expression) {
@@ -320,7 +331,11 @@ async function connectMain() {
 }
 
 async function openReader(main) {
-  if (!await clickText(main, ".book-card", bookTitle)) throw new Error("Fixture book card was not clickable");
+  // Give the persisted auto-open intent time to move the library into its
+  // opening state before deciding whether a manual card click is needed.
+  await sleep(800);
+  const readerInProgress = await evaluate(main, "Boolean(document.querySelector('.reader-page'))");
+  if (!readerInProgress && !await clickText(main, ".book-card", bookTitle)) throw new Error("Fixture book card was not clickable");
   await waitFor(main, "Boolean(document.querySelector('.native-reader'))", "Native reader did not open");
   await waitFor(main, "window.__qaReaderEvents.length > 0", "readerOpened event was not observed");
   const opened = await evaluate(main, "window.__qaReaderEvents.at(-1)");
@@ -351,7 +366,16 @@ async function showFloating(main) {
 async function assertSurfaceFits(floating) {
   const layout = await evaluate(floating, `(() => {
     const root = document.querySelector('[data-testid="native-floating-reader"], .native-floating-surface');
-    const controls = [...document.querySelectorAll("button, input")].map((node) => {
+    const rect = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      if (getComputedStyle(node).visibility === 'hidden') return null;
+      const value = node.getBoundingClientRect();
+      return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
+    };
+    const overlaps = (first, second) => Boolean(first && second && first.left < second.right - 1 && first.right > second.left + 1 && first.top < second.bottom - 1 && first.bottom > second.top + 1);
+    const regions = { header: rect('.floating-dragbar'), content: rect('.floating-content'), error: rect('.floating-error'), footer: rect('.floating-controls'), current: rect('[data-sentence-role="current"]') };
+    const controls = [...document.querySelectorAll("button, input")].filter((node) => getComputedStyle(node).visibility !== 'hidden').map((node) => {
       const rect = node.getBoundingClientRect();
       return { label: node.getAttribute("aria-label") || node.innerText, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
     });
@@ -364,6 +388,10 @@ async function assertSurfaceFits(floating) {
       documentWidth: document.documentElement.scrollWidth,
       documentHeight: document.documentElement.scrollHeight,
       root: root ? { width: root.scrollWidth, height: root.scrollHeight } : null,
+      contextMode: root?.dataset.contextMode || '',
+      contentScrollable: document.querySelector('.floating-content')?.scrollHeight > document.querySelector('.floating-content')?.clientHeight + 1,
+      regionOverlap: overlaps(regions.header, regions.content) || overlaps(regions.content, regions.error) || overlaps(regions.content, regions.footer) || overlaps(regions.error, regions.footer),
+      regions,
       clippedControls: controls.filter((rect) => rect.left < -1 || rect.top < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1),
     };
   })()`);
@@ -371,6 +399,7 @@ async function assertSurfaceFits(floating) {
     throw new Error(`Floating layout overflow: ${JSON.stringify(layout)}`);
   }
   if (layout.clippedControls.length) throw new Error(`Floating controls clipped: ${JSON.stringify(layout.clippedControls)}`);
+  if (layout.regionOverlap) throw new Error(`Floating regions overlap: ${JSON.stringify(layout.regions)}`);
   return layout;
 }
 
@@ -405,7 +434,15 @@ async function primaryScenario() {
     throw new Error(`Expected two real top-level Qt windows: ${JSON.stringify(initialWindowSnapshot)}`);
   }
   const initialFloatingWindow = roleWindow(initialWindowSnapshot, "floating");
+  const initialMainWindow = roleWindow(initialWindowSnapshot, "main");
   if (!initialFloatingWindow.visible || initialFloatingWindow.minimized) throw new Error("Floating top-level window is not visible");
+  if (!initialFloatingWindow.toolWindow || initialMainWindow.toolWindow) throw new Error("Floating window taskbar/tool-window flags are incorrect");
+  if (initialMainWindow.layeredWindow || !initialFloatingWindow.layeredWindow) {
+    throw new Error(`Main and floating composition paths are not isolated: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
+  }
+  if (initialMainWindow.windowRegionType !== "complex" || initialFloatingWindow.windowRegionType !== "none") {
+    throw new Error(`Windows 10 corner regions are not isolated: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
+  }
   if (!initialFloatingWindow.topmost || state.settings.topmost !== true) throw new Error("Floating window is not topmost by default");
   await waitFor(
     floating,
@@ -413,12 +450,96 @@ async function primaryScenario() {
     "Long current sentence did not render in floating window",
   );
   evidence.longSentence = await capture(floating, "stage4-long-sentence.png");
-  evidence.default = await capture(floating, "stage4-default.png");
+  await floating.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: -12, y: -12 });
+  await sleep(240);
+  const focusedLayout = await evaluate(floating, `(() => {
+    const root = document.querySelector('.native-floating-surface');
+    const header = document.querySelector('.floating-dragbar');
+    const footer = document.querySelector('.floating-controls');
+    const content = document.querySelector('.floating-content');
+    return {
+      hovered: root.matches(':hover'),
+      contextMode: root.dataset.contextMode,
+      previousDisplay: getComputedStyle(document.querySelector('[data-sentence-role="previous"]')).display,
+      nextDisplay: getComputedStyle(document.querySelector('[data-sentence-role="next"]')).display,
+      headerVisibility: getComputedStyle(header).visibility,
+      footerVisibility: getComputedStyle(footer).visibility,
+      headerHeight: header.getBoundingClientRect().height,
+      footerHeight: footer.getBoundingClientRect().height,
+      contentHeight: content.getBoundingClientRect().height,
+    };
+  })()`);
+  if (focusedLayout.hovered || focusedLayout.headerVisibility !== "hidden" || focusedLayout.footerVisibility !== "hidden"
+      || focusedLayout.headerHeight > 1 || focusedLayout.footerHeight > 1
+      || focusedLayout.contextMode !== "all" || focusedLayout.previousDisplay === "none" || focusedLayout.nextDisplay === "none") {
+    throw new Error(`Floating chrome did not collapse after pointer leave: ${JSON.stringify(focusedLayout)}`);
+  }
+  evidence.contentFocus = await capture(floating, "stage4-content-focus.png");
+  const floatingViewport = await evaluate(floating, "({ width: innerWidth, height: innerHeight })");
+  await floating.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: Math.round(floatingViewport.width / 2),
+    y: Math.round(floatingViewport.height / 2),
+  });
+  const hoverLayout = await evaluate(floating, `new Promise((resolve) => setTimeout(() => {
+    const root = document.querySelector('.native-floating-surface');
+    const header = document.querySelector('.floating-dragbar');
+    const footer = document.querySelector('.floating-controls');
+    resolve({
+      hovered: root.matches(':hover'),
+      contextMode: root.dataset.contextMode,
+      previousDisplay: getComputedStyle(document.querySelector('[data-sentence-role="previous"]')).display,
+      nextDisplay: getComputedStyle(document.querySelector('[data-sentence-role="next"]')).display,
+      headerVisibility: getComputedStyle(header).visibility,
+      footerVisibility: getComputedStyle(footer).visibility,
+      headerHeight: header.getBoundingClientRect().height,
+      footerHeight: footer.getBoundingClientRect().height,
+    });
+  }, 240))`);
+  if (!hoverLayout.hovered || hoverLayout.headerVisibility !== "visible" || hoverLayout.footerVisibility !== "visible"
+      || hoverLayout.headerHeight < 40 || hoverLayout.footerHeight < 50
+      || hoverLayout.previousDisplay !== "none" || hoverLayout.nextDisplay !== "none") {
+    throw new Error(`Floating chrome did not expand on hover: ${JSON.stringify(hoverLayout)}`);
+  }
+  evidence.default = await capture(floating, "stage4-hover-controls.png");
+  evidence.mainNormal = await capture(main, "stage4-main-normal.png");
+  const normalWindowStyle = await evaluate(main, `(() => {
+    const node = document.querySelector('.mac-window');
+    const rect = node.getBoundingClientRect();
+    return { radius: getComputedStyle(node).borderRadius, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, innerWidth, innerHeight };
+  })()`);
+  if (normalWindowStyle.radius !== "22px"
+      || Math.abs(normalWindowStyle.left - 1) > .75 || Math.abs(normalWindowStyle.top - 1) > .75
+      || Math.abs(normalWindowStyle.right - (normalWindowStyle.innerWidth - 1)) > .75
+      || Math.abs(normalWindowStyle.bottom - (normalWindowStyle.innerHeight - 1)) > .75) {
+    throw new Error(`Main normal-state corner surface is incorrect: ${JSON.stringify(normalWindowStyle)}`);
+  }
+  const floatingWindowStyle = await evaluate(floating, `(() => {
+    const node = document.querySelector('.native-floating-surface');
+    const rect = node.getBoundingClientRect();
+    return { radius: getComputedStyle(node).borderRadius, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, innerWidth, innerHeight };
+  })()`);
+  if (floatingWindowStyle.radius !== "30px"
+      || Math.abs(floatingWindowStyle.left - 2) > .75 || Math.abs(floatingWindowStyle.top - 2) > .75
+      || Math.abs(floatingWindowStyle.right - (floatingWindowStyle.innerWidth - 2)) > .75
+      || Math.abs(floatingWindowStyle.bottom - (floatingWindowStyle.innerHeight - 2)) > .75) {
+    throw new Error(`Floating corner surface is incorrect: ${JSON.stringify(floatingWindowStyle)}`);
+  }
+  if (!await clickLabel(main, "最大化窗口")) throw new Error("Main maximize control missing");
+  await waitFor(main, "document.querySelector('.prototype-stage')?.dataset.windowMode === 'maximized'", "Main maximize state did not reach the frontend");
+  const maximizedRadius = await evaluate(main, "getComputedStyle(document.querySelector('.mac-window')).borderRadius");
+  if (maximizedRadius !== "0px") throw new Error(`Main maximized radius was not cleared: ${maximizedRadius}`);
+  if (roleWindow(probe(), "main").windowRegionType !== "none") throw new Error("Maximized main window retained its rounded native region");
+  evidence.mainMaximized = await capture(main, "stage4-main-maximized.png");
+  if (!await clickLabel(main, "还原窗口")) throw new Error("Main restore control missing");
+  await waitFor(main, "document.querySelector('.prototype-stage')?.dataset.windowMode === 'normal'", "Main normal state did not restore");
+  await sleep(180);
+  if (roleWindow(probe(), "main").windowRegionType !== "complex") throw new Error("Restored main window did not regain its rounded native region");
   const defaultLayout = await assertSurfaceFits(floating);
 
   if (!await clickLabel(floating, "播放")) throw new Error("Floating playback button missing");
-  await waitFor(main, "window.__qaPlaybackEvents.some((event) => event.playback?.status === 'playing')", "Playback did not enter playing state", 15_000);
-  await waitFor(main, "Boolean(document.querySelector('.reading-copy mark'))", "Main reader did not highlight floating playback sentence", 10_000);
+  await waitFor(main, "window.__qaPlaybackEvents.some((event) => ['playing', 'error'].includes(event.playback?.status))", "Playback produced neither a playing state nor a structured backend error", 15_000);
+  await waitFor(main, "Boolean(document.querySelector('.reading-copy mark')) || window.__qaPlaybackEvents.some((event) => event.playback?.status === 'error')", "Main reader did not highlight floating playback sentence", 10_000);
   await waitFor(floating, `document.querySelector('[data-sentence-role="current"]')?.innerText.includes(${quote(longMarker)})`, "Floating current sentence diverged from main playback");
   const playbackState = await floatingState(main);
   const highlighted = await evaluate(main, "document.querySelector('.reading-copy mark')?.innerText || ''");
@@ -429,15 +550,16 @@ async function primaryScenario() {
   const backendFailure = playbackState.playback.status === "error"
     ? playbackEvents.find((event) => event.reason === "error") || null
     : null;
-  if (backendFailure && !backendFailure.error?.code) throw new Error("TTS backend failure was not structured");
-  if (!["playing", "error"].includes(playbackState.playback.status) || !highlighted || !floatingCurrent || !floatingCurrent.startsWith(highlighted) || !sharedOffsets) {
+  if (playbackState.playback.status === "error") {
+    if (!backendFailure?.error?.code || !floatingCurrent) throw new Error(`TTS backend failure was not structured: ${JSON.stringify(backendFailure)}`);
+  } else if (playbackState.playback.status !== "playing" || !highlighted || !floatingCurrent || !floatingCurrent.startsWith(highlighted) || !sharedOffsets) {
     throw new Error(`Main/floating playback state diverged: ${JSON.stringify({ highlighted, floatingCurrent, playback: playbackState.playback })}`);
   }
 
   if (!await clickLabel(main, "最小化窗口")) throw new Error("Main minimize control missing");
   await sleep(500);
   const minimized = probe();
-  if (!roleWindow(minimized, "main").minimized) throw new Error("Main Qt window did not minimize");
+  if (roleWindow(minimized, "main").visible) throw new Error("Main Qt window did not hide to the system tray");
   const visibleWhileMinimized = roleWindow(minimized, "floating");
   if (!visibleWhileMinimized.visible || visibleWhileMinimized.minimized) throw new Error("Floating window disappeared with minimized main window");
   evidence.mainMinimized = await capture(floating, "stage4-main-minimized.png");
@@ -523,26 +645,116 @@ async function primaryScenario() {
   if (!await clickLabel(floating, "置顶悬浮窗")) throw new Error("Topmost restore control missing");
   await waitForFloatingState(main, (value) => value.settings.topmost === true, "Topmost setting did not restore");
   await sleep(150);
-  if (!await clickLabel(floating, "放大浮窗文字")) throw new Error("Floating font-size control missing");
+  const wheelDispatched = await evaluate(floating, `(() => {
+    const node = document.querySelector('.floating-content');
+    if (!node) return false;
+    node.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  if (!wheelDispatched) throw new Error("Floating wheel target missing");
   await waitForFloatingState(main, (value) => value.settings.fontSize > settingsBefore.fontSize && value.settings.followReaderFont === false, "Floating font size did not increase or leave follow mode");
   await sleep(150);
-  const backgroundLabel = settingsBefore.background === "sepia" ? "切换深色背景" : "切换米色背景";
-  if (!await clickLabel(floating, backgroundLabel)) throw new Error("Floating background control missing");
+  const opacityChanged = await evaluate(floating, `(() => {
+    const node = document.querySelector('input[aria-label="悬浮窗背景透明度"]');
+    if (!node) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(node, '0');
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    node.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  if (!opacityChanged) throw new Error("Floating background-opacity slider missing");
+  await waitForFloatingState(main, (value) => value.settings.backgroundOpacity === 0, "Floating background opacity did not reach zero");
+  evidence.transparent = await capture(floating, "stage4-transparent-background.png");
+  if (!await clickLabel(main, "更多设置")) throw new Error("Settings center control missing");
+  const voiceCatalog = await evaluate(main, `(() => ({
+    edge: document.querySelectorAll('.speech-settings optgroup[label^="Edge"] option').length,
+    local: document.querySelectorAll('.speech-settings optgroup[label^="本地"] option').length,
+    hasRate: Boolean(document.querySelector('.speech-settings input[min="80"][max="400"]')),
+    hasGap: Boolean(document.querySelector('.speech-settings input[min="0"][max="1"]')),
+  }))()`);
+  if (voiceCatalog.edge < 9 || voiceCatalog.local < 1 || !voiceCatalog.hasRate || !voiceCatalog.hasGap) throw new Error(`Settings voice/speech controls incomplete: ${JSON.stringify(voiceCatalog)}`);
+  const backgroundLabel = settingsBefore.background === "sepia" ? "深色" : "米黄";
+  if (!await clickText(main, ".floating-settings-section button", backgroundLabel)) throw new Error("Floating background setting missing");
   await waitForFloatingState(main, (value) => value.settings.background !== settingsBefore.background, "Floating background did not change");
-  await sleep(150);
-  if (!await clickLabel(floating, "降低悬浮窗透明度")) throw new Error("Floating opacity control missing");
-  await waitForFloatingState(main, (value) => value.settings.opacity < settingsBefore.opacity, "Floating opacity did not decrease");
-  await sleep(150);
-  if (!await clickLabel(floating, "跟随阅读器字号")) throw new Error("Follow-reader-font control missing");
+  const hoverContextChanged = await evaluate(main, `(() => {
+    const label = [...document.querySelectorAll('.floating-settings-section label')]
+      .find((item) => item.textContent.includes('鼠标移开时显示上一段和下一段'));
+    const node = label?.querySelector('input[type="checkbox"]');
+    if (!node) return false;
+    node.click();
+    return true;
+  })()`);
+  if (!hoverContextChanged) throw new Error("Idle-context setting missing");
+  await waitForFloatingState(main, (value) => value.settings.hoverDisplayEnabled === false, "Idle-context setting did not toggle");
+  const followChanged = await evaluate(main, `(() => {
+    const label = [...document.querySelectorAll('.floating-settings-section label')]
+      .find((item) => item.textContent.includes('跟随主阅读器字号'));
+    const node = label?.querySelector('input[type="checkbox"]');
+    if (!node) return false;
+    node.click();
+    return true;
+  })()`);
+  if (!followChanged) throw new Error("Follow-reader-font setting missing");
   await waitForFloatingState(main, (value) => value.settings.followReaderFont === true, "Follow-reader-font setting did not toggle");
+  await nativeCall(main, "updateFloatingReaderSettings", JSON.stringify({ patch: { textColor: "#123ABC" } }));
+  if (!await clickLabel(main, "关闭设置")) throw new Error("Settings center did not close");
   await sleep(150);
+  await floating.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: -12, y: -12 });
+  const disabledIdleLayout = await evaluate(floating, `new Promise((resolve) => setTimeout(() => {
+    const root = document.querySelector('.native-floating-surface');
+    const header = document.querySelector('.floating-dragbar');
+    const footer = document.querySelector('.floating-controls');
+    resolve({
+      hovered: root.matches(':hover'),
+      previousDisplay: getComputedStyle(document.querySelector('[data-sentence-role="previous"]')).display,
+      nextDisplay: getComputedStyle(document.querySelector('[data-sentence-role="next"]')).display,
+      headerVisibility: getComputedStyle(header).visibility,
+      footerVisibility: getComputedStyle(footer).visibility,
+      headerHeight: header.getBoundingClientRect().height,
+      footerHeight: footer.getBoundingClientRect().height,
+    });
+  }, 240))`);
+  if (disabledIdleLayout.hovered || disabledIdleLayout.headerVisibility !== "hidden" || disabledIdleLayout.footerVisibility !== "hidden"
+      || disabledIdleLayout.headerHeight > 1 || disabledIdleLayout.footerHeight > 1
+      || disabledIdleLayout.previousDisplay !== "none" || disabledIdleLayout.nextDisplay !== "none") {
+    throw new Error(`Disabled idle-context mode affected collapsed chrome or exposed context: ${JSON.stringify(disabledIdleLayout)}`);
+  }
+  evidence.disabledIdle = await capture(floating, "stage4-disabled-idle-current-only.png");
+  await floating.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: Math.round(floatingViewport.width / 2),
+    y: Math.round(floatingViewport.height / 2),
+  });
+  const disabledHoverLayout = await evaluate(floating, `new Promise((resolve) => setTimeout(() => {
+    const root = document.querySelector('.native-floating-surface');
+    const header = document.querySelector('.floating-dragbar');
+    const footer = document.querySelector('.floating-controls');
+    resolve({
+      hovered: root.matches(':hover'),
+      previousDisplay: getComputedStyle(document.querySelector('[data-sentence-role="previous"]')).display,
+      nextDisplay: getComputedStyle(document.querySelector('[data-sentence-role="next"]')).display,
+      headerVisibility: getComputedStyle(header).visibility,
+      footerVisibility: getComputedStyle(footer).visibility,
+      headerHeight: header.getBoundingClientRect().height,
+      footerHeight: footer.getBoundingClientRect().height,
+    });
+  }, 240))`);
+  if (!disabledHoverLayout.hovered || disabledHoverLayout.headerVisibility !== "visible" || disabledHoverLayout.footerVisibility !== "visible"
+      || disabledHoverLayout.headerHeight < 40 || disabledHoverLayout.footerHeight < 50
+      || disabledHoverLayout.previousDisplay !== "none" || disabledHoverLayout.nextDisplay !== "none") {
+    throw new Error(`Disabled idle-context mode affected hover chrome: ${JSON.stringify(disabledHoverLayout)}`);
+  }
+  evidence.disabledHover = await capture(floating, "stage4-disabled-hover-controls.png");
   if (!await clickLabel(floating, "显示双语")) throw new Error("Bilingual control missing");
   state = await waitForFloatingState(main, (value) => value.settings.bilingual === true, "Bilingual setting did not toggle");
   if (state.settings.topmost !== true || !roleWindow(probe(), "floating").topmost) throw new Error("Topmost=true did not reach the native window");
-  if (state.settings.fontSize <= settingsBefore.fontSize) throw new Error("Floating font size did not increase");
+  if (state.settings.fontSize !== opened.settings.fontSize) throw new Error("Follow-reader-font did not restore the main reader size");
   if (state.settings.background === settingsBefore.background) throw new Error("Floating background did not change");
-  if (state.settings.opacity >= settingsBefore.opacity) throw new Error("Floating opacity did not decrease");
+  if (state.settings.backgroundOpacity !== 0) throw new Error("Floating background opacity did not reach zero");
+  if (state.settings.textColor !== "#123ABC") throw new Error("Floating text color did not persist");
   if (state.settings.followReaderFont !== true) throw new Error("Follow-reader-font setting did not restore");
+  if (state.settings.hoverDisplayEnabled !== false) throw new Error("Idle-context setting did not persist");
   if (state.settings.bilingual !== true) throw new Error("Bilingual setting did not toggle");
 
   const beforeMove = roleWindow(probe(), "floating").rect;
@@ -589,10 +801,23 @@ async function primaryScenario() {
   const screen = probe().monitors.find((item) => item.primary) || probe().monitors[0];
   const safeX = screen.work.left + 80;
   const safeY = screen.work.top + 80;
-  probe("place", ["--role", "floating", "--x", String(safeX), "--y", String(safeY), "--width", "370", "--height", "238"]);
-  await sleep(400);
-  await assertSurfaceFits(floating);
-  evidence.minimum = await capture(floating, "stage4-minimum.png");
+  await nativeCall(main, "updateFloatingReaderSettings", JSON.stringify({ patch: { followReaderFont: false, backgroundOpacity: 0.75 } }));
+  const layoutCases = [
+    { width: 360, height: 220, fontSize: 40, name: "360x220-font40" },
+    { width: 448, height: 273, fontSize: 22, name: "448x273-font22" },
+    { width: 560, height: 300, fontSize: 14, name: "560x300-font14" },
+  ];
+  evidence.layouts = [];
+  for (const item of layoutCases) {
+    await nativeCall(main, "updateFloatingReaderSettings", JSON.stringify({ patch: { fontSize: item.fontSize } }));
+    probe("place", ["--role", "floating", "--x", String(safeX), "--y", String(safeY), "--width", String(item.width), "--height", String(item.height)]);
+    await sleep(450);
+    const layout = await assertSurfaceFits(floating);
+    if (!layout.regions.current || layout.regions.current.height <= 0) throw new Error(`Current sentence disappeared for ${item.name}`);
+    const screenshot = await capture(floating, `stage4-${item.name}.png`);
+    evidence.layouts.push({ ...item, contextMode: layout.contextMode, contentScrollable: layout.contentScrollable, screenshot });
+  }
+  evidence.minimum = evidence.layouts[0].screenshot;
 
   const largeWidth = Math.min(920, screen.work.width - 120);
   const largeHeight = Math.min(620, screen.work.height - 120);
@@ -624,7 +849,7 @@ async function primaryScenario() {
   await assertSurfaceFits(floating);
 
   const issues = [...consoleIssues(main), ...consoleIssues(floating)];
-  if (issues.length) throw new Error(`Stage-4 pages emitted ${issues.length} console issue(s)`);
+  if (issues.length) throw new Error(`Stage-4 pages emitted ${issues.length} console issue(s): ${JSON.stringify(issues)}`);
   await saveCheckpoint({
     bookId: opened.book.id,
     sessionId: opened.sessionId,

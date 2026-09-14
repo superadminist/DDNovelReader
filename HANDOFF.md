@@ -92,7 +92,7 @@ Qt DesktopWindow
 
 ## 5. 数据兼容与保护
 
-默认数据根目录是 `%APPDATA%\DDNovelReader`：
+安装版默认数据根目录是 `<安装目录>\data`；源码运行仍使用 `%APPDATA%\DDNovelReader`：
 
 | 路径 | 内容 |
 | --- | --- |
@@ -103,7 +103,9 @@ Qt DesktopWindow
 
 服务层沿用原有字段，缺失的新设置读取默认值；只有用户实际修改设置或导入内容时才写入。写入采用锁和原子替换，损坏或结构错误的数据会 fail closed，不用空数据覆盖原文件。
 
-仓库中的真实样书、个人 `library.json`、缓存、日志、`prototype/node_modules` 和本地包缓存都不是交付源码。任何测试应使用临时 `APPDATA` 或明确的临时书架，并把截图写到仓库外。
+安装版首次启动且 `data` 不存在时，会先把旧 `%APPDATA%\DDNovelReader` 复制到临时兄弟目录，完整复制成功后再原子切换为 `data`。旧目录不删除；安装器升级和卸载也不删除 `data`。
+
+仓库中的真实样书、个人 `library.json`、缓存、日志、`prototype/node_modules` 和本地包缓存都不是交付源码。任何测试应使用临时 `APPDATA`、`DOUBAO_NOVEL_DATA` 或明确的临时书架，并把截图写到仓库外。
 
 ## 6. 当前验证快照
 

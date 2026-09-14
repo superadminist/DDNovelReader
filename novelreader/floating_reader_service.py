@@ -15,21 +15,25 @@ from .library_service import default_library_path
 DEFAULT_FLOATING_SETTINGS = {
     "geometry": "",
     "topmost": True,
-    "opacity": 0.92,
+    "backgroundOpacity": 0.92,
     "fontSize": 22,
     "followReaderFont": True,
     "background": "light",
     "bilingual": False,
+    "textColor": "auto",
+    "hoverDisplayEnabled": True,
 }
 
 _STORAGE_KEYS = {
     "geometry": "floating_reader_geometry",
     "topmost": "floating_reader_topmost",
-    "opacity": "floating_reader_opacity",
+    "backgroundOpacity": "floating_reader_background_opacity",
     "fontSize": "floating_reader_font_size",
     "followReaderFont": "floating_reader_follow_font",
     "background": "floating_reader_background",
     "bilingual": "floating_reader_bilingual",
+    "textColor": "floating_reader_text_color",
+    "hoverDisplayEnabled": "floating_reader_hover_display",
 }
 _PATCH_KEYS = set(DEFAULT_FLOATING_SETTINGS) - {"geometry"}
 
@@ -98,14 +102,14 @@ class FloatingReaderService:
             raise FloatingReaderError("INVALID_REQUEST", "悬浮窗设置参数不正确。")
         clean = dict(self._settings)
         for key, value in patch.items():
-            if key in {"topmost", "followReaderFont", "bilingual"}:
+            if key in {"topmost", "followReaderFont", "bilingual", "hoverDisplayEnabled"}:
                 if not isinstance(value, bool):
                     raise FloatingReaderError("INVALID_REQUEST", "悬浮窗开关设置不正确。")
                 clean[key] = value
-            elif key == "opacity":
+            elif key == "backgroundOpacity":
                 number = _finite_number(value)
-                if number is None or number < 0.65 or number > 1.0:
-                    raise FloatingReaderError("INVALID_REQUEST", "悬浮窗透明度超出允许范围。")
+                if number is None or number < 0.0 or number > 1.0:
+                    raise FloatingReaderError("INVALID_REQUEST", "悬浮窗背景透明度超出允许范围。")
                 clean[key] = number
             elif key == "fontSize":
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
@@ -117,6 +121,10 @@ class FloatingReaderService:
                 if value not in {"light", "sepia", "dark"}:
                     raise FloatingReaderError("INVALID_REQUEST", "悬浮窗背景设置不正确。")
                 clean[key] = value
+            elif key == "textColor":
+                if value != "auto" and not _is_hex_color(value):
+                    raise FloatingReaderError("INVALID_REQUEST", "悬浮窗字体颜色不正确。")
+                clean[key] = value.upper() if value != "auto" else "auto"
         previous = self._settings
         self._settings = clean
         try:
@@ -153,6 +161,10 @@ class FloatingReaderService:
             public: raw.get(storage, DEFAULT_FLOATING_SETTINGS[public])
             for public, storage in _STORAGE_KEYS.items()
         }
+        if "floating_reader_background_opacity" not in raw:
+            projected["backgroundOpacity"] = raw.get(
+                "floating_reader_opacity", DEFAULT_FLOATING_SETTINGS["backgroundOpacity"]
+            )
         return normalize_floating_settings(projected)
 
     def _persist(self) -> None:
@@ -189,11 +201,11 @@ def normalize_floating_settings(settings: dict[str, Any]) -> dict[str, Any]:
     clean = dict(DEFAULT_FLOATING_SETTINGS)
     geometry = settings.get("geometry")
     clean["geometry"] = str(geometry) if isinstance(geometry, str) else ""
-    for key in ("topmost", "followReaderFont", "bilingual"):
+    for key in ("topmost", "followReaderFont", "bilingual", "hoverDisplayEnabled"):
         value = settings.get(key)
         clean[key] = value if isinstance(value, bool) else DEFAULT_FLOATING_SETTINGS[key]
-    opacity = _finite_number(settings.get("opacity"))
-    clean["opacity"] = min(1.0, max(0.65, opacity)) if opacity is not None else 0.92
+    opacity = _finite_number(settings.get("backgroundOpacity"))
+    clean["backgroundOpacity"] = min(1.0, max(0.0, opacity)) if opacity is not None else 0.92
     font_size = settings.get("fontSize")
     if isinstance(font_size, bool):
         font_size = None
@@ -206,6 +218,10 @@ def normalize_floating_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if background == "beige":
         background = "sepia"
     clean["background"] = background if background in {"light", "sepia", "dark"} else "light"
+    text_color = settings.get("textColor")
+    clean["textColor"] = (
+        text_color.upper() if _is_hex_color(text_color) else "auto"
+    )
     return clean
 
 
@@ -217,3 +233,9 @@ def _finite_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _is_hex_color(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+        return False
+    return all(character in "0123456789abcdefABCDEF" for character in value[1:])

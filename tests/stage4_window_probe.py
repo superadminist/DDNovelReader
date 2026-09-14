@@ -20,9 +20,13 @@ if sys.platform != "win32":
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 GWL_EXSTYLE = -20
 WS_EX_TOPMOST = 0x00000008
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
+WS_EX_LAYERED = 0x00080000
 SW_RESTORE = 9
 SW_MINIMIZE = 6
 SWP_NOACTIVATE = 0x0010
@@ -78,6 +82,8 @@ user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.restype = ctypes.c_int
 user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.GetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN]
+user32.GetWindowRgn.restype = ctypes.c_int
 user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.POINTER(RECT), MONITORENUMPROC, wintypes.LPARAM]
 user32.EnumDisplayMonitors.restype = wintypes.BOOL
 user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
@@ -100,6 +106,26 @@ user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 user32.SetCursorPos.restype = wintypes.BOOL
 user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
 user32.mouse_event.restype = None
+gdi32.CreateRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+gdi32.CreateRectRgn.restype = wintypes.HRGN
+gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+gdi32.DeleteObject.restype = wintypes.BOOL
+
+
+def _window_region_type(hwnd: int) -> str:
+    region = gdi32.CreateRectRgn(0, 0, 0, 0)
+    if not region:
+        return "error"
+    try:
+        return {
+            # GetWindowRgn returns ERROR when the window has no region at all.
+            0: "none",
+            1: "empty",
+            2: "simple",
+            3: "complex",
+        }.get(int(user32.GetWindowRgn(hwnd, region)), "unknown")
+    finally:
+        gdi32.DeleteObject(region)
 
 
 def _rect_payload(rect: RECT) -> dict[str, int]:
@@ -145,6 +171,10 @@ def _windows(pid: int) -> list[dict[str, object]]:
             "visible": visible,
             "minimized": iconic,
             "topmost": bool(ex_style & WS_EX_TOPMOST),
+            "toolWindow": bool(ex_style & WS_EX_TOOLWINDOW),
+            "appWindow": bool(ex_style & WS_EX_APPWINDOW),
+            "layeredWindow": bool(ex_style & WS_EX_LAYERED),
+            "windowRegionType": _window_region_type(hwnd),
             "rect": payload,
         })
         return True
@@ -177,8 +207,8 @@ def _monitors() -> list[dict[str, object]]:
 
 def _with_roles(items: list[dict[str, object]]) -> list[dict[str, object]]:
     candidates = [item for item in items if item["visible"] or item["minimized"]]
-    main = next((item for item in candidates if item["title"] == "多多朗读"), None)
-    floating = next((item for item in candidates if "悬浮" in str(item["title"])), None)
+    main = next((item for item in items if item["title"] == "多多朗读"), None)
+    floating = next((item for item in items if "悬浮" in str(item["title"])), None)
     if main is None and candidates:
         main = max(candidates, key=lambda item: item["rect"]["width"] * item["rect"]["height"])
     if floating is None:
@@ -227,13 +257,24 @@ def _place(pid: int, role: str, x: int, y: int, width: int, height: int) -> None
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _drag(pid: int, role: str, local_x: int, local_y: int, delta_x: int, delta_y: int) -> None:
+def _drag(pid: int, role: str, local_x: int, local_y: int, delta_x: int, delta_y: int) -> str:
     item = _role_window(pid, role)
     point = POINT(local_x, local_y)
     if not user32.ClientToScreen(item["hwnd"], ctypes.byref(point)):
         raise ctypes.WinError(ctypes.get_last_error())
     if not user32.SetCursorPos(point.x, point.y):
-        raise ctypes.WinError(ctypes.get_last_error())
+        rect = item["rect"]
+        resizing = local_x >= rect["width"] - 36 and local_y >= rect["height"] - 36
+        _place(
+            pid,
+            role,
+            rect["left"] + (0 if resizing else delta_x),
+            rect["top"] + (0 if resizing else delta_y),
+            rect["width"] + (delta_x if resizing else 0),
+            rect["height"] + (delta_y if resizing else 0),
+        )
+        time.sleep(0.18)
+        return "set-window-pos-fallback"
     time.sleep(0.08)
     user32.mouse_event(0x0002, 0, 0, 0, None)  # MOUSEEVENTF_LEFTDOWN
     time.sleep(0.08)
@@ -243,6 +284,7 @@ def _drag(pid: int, role: str, local_x: int, local_y: int, delta_x: int, delta_y
     time.sleep(0.18)
     user32.mouse_event(0x0004, 0, 0, 0, None)  # MOUSEEVENTF_LEFTUP
     time.sleep(0.12)
+    return "mouse"
 
 
 def main() -> int:
@@ -260,6 +302,7 @@ def main() -> int:
     parser.add_argument("--dy", type=int, default=40)
     args = parser.parse_args()
 
+    drag_mode = None
     if args.action == "restore":
         _show(args.pid, args.role, SW_RESTORE)
     elif args.action == "minimize":
@@ -267,10 +310,13 @@ def main() -> int:
     elif args.action == "place":
         _place(args.pid, args.role, args.x, args.y, args.width, args.height)
     elif args.action == "drag":
-        _drag(args.pid, args.role, args.from_x, args.from_y, args.dx, args.dy)
+        drag_mode = _drag(args.pid, args.role, args.from_x, args.from_y, args.dx, args.dy)
     # ASCII escaping keeps the JSON transport stable when a Windows child
     # process inherits a non-UTF-8 console code page.
-    print(json.dumps(snapshot(args.pid), ensure_ascii=True))
+    result = snapshot(args.pid)
+    if drag_mode is not None:
+        result["dragMode"] = drag_mode
+    print(json.dumps(result, ensure_ascii=True))
     return 0
 
 

@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .paths import default_data_dir
+
 
 DEFAULT_COVER_URL = "covers/library.png"
 
@@ -22,13 +24,7 @@ class LibraryDataError(Exception):
 
 def default_library_path() -> Path:
     """Resolve the existing library path without creating any directories."""
-    configured = os.environ.get("DOUBAO_NOVEL_DATA")
-    if configured:
-        return Path(configured) / "library.json"
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / "DDNovelReader" / "library.json"
-    return Path.home() / "DDNovelReader" / "library.json"
+    return default_data_dir() / "library.json"
 
 
 def _finite_number(value: Any) -> float | None:

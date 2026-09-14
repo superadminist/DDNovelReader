@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const DEMO_BOOKS = [
   { id: "demo-1", title: "高效能人士的七个习惯", author: "", format: "EPUB", progressPercent: 36, chapterIndex: 2, chapterCount: 12, currentChapterTitle: "第 3 章 · 要事第一", lastReadAt: null, totalChars: 0, coverUrl: "covers/mountains.png" },
@@ -22,7 +22,7 @@ function demoFloatingState(visible = false, playback = demoPlayback()) {
     visible,
     sessionId: "demo-reader-session",
     bookId: "demo-3",
-    settings: { geometry: "", topmost: true, opacity: 0.94, fontSize: 20, followReaderFont: true, background: "light", bilingual: false },
+    settings: { geometry: "", topmost: true, backgroundOpacity: 0.94, fontSize: 20, followReaderFont: true, background: "light", bilingual: false, textColor: "auto", hoverDisplayEnabled: true },
     playback,
     context: {
       chapterIndex: 0,
@@ -48,7 +48,16 @@ const EMPTY_DATA = {
   app: { version: "2.0.0" },
   library: { books: [], total: 0 },
   preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, startupBookId: "" },
-  window: { isMaximized: false },
+  window: { isMaximized: false, isFullScreen: false },
+  speech: {
+    settings: { ttsRate: 200, ttsVoiceId: "", sentenceGapSeconds: 0.1 },
+    voices: [
+      { id: "", label: "系统默认音色", backend: "sapi", requiresNetwork: false },
+      { id: "zh-CN-XiaoxiaoNeural", label: "晓晓·女声·温柔", backend: "edge", requiresNetwork: true },
+    ],
+    loadingLocalVoices: false,
+    localVoiceError: "",
+  },
   capabilities: {
     fileImport: false,
     pasteImport: false,
@@ -83,11 +92,13 @@ const APP_THEMES = new Set(["白天", "护眼", "夜间", "米黄"]);
 const WINDOW_RESIZE_EDGES = new Set(["top", "right", "bottom", "left", "topRight", "bottomRight", "bottomLeft", "topLeft"]);
 const FLOATING_SETTING_FIELDS = {
   topmost: "boolean",
-  opacity: "number",
+  backgroundOpacity: "number",
   fontSize: "number",
   followReaderFont: "boolean",
   background: "string",
   bilingual: "boolean",
+  textColor: "string",
+  hoverDisplayEnabled: "boolean",
 };
 const READER_SETTING_FIELDS = {
   fontFamily: "string",
@@ -126,6 +137,37 @@ function validAppPreferences(preferences) {
     && (preferences.colorScheme === "dark") === (preferences.theme === "夜间")
     && typeof preferences.autoOpenLast === "boolean"
     && typeof preferences.startupBookId === "string",
+  );
+}
+
+function validSpeechState(state) {
+  return Boolean(
+    state
+    && state.settings
+    && typeof state.settings.ttsVoiceId === "string"
+    && Number.isInteger(state.settings.ttsRate)
+    && state.settings.ttsRate >= 80 && state.settings.ttsRate <= 400
+    && nonNegativeNumber(state.settings.sentenceGapSeconds)
+    && state.settings.sentenceGapSeconds <= 1
+    && Array.isArray(state.voices)
+    && state.voices.every((voice) => (
+      voice
+      && typeof voice.id === "string"
+      && typeof voice.label === "string"
+      && ["sapi", "edge"].includes(voice.backend)
+      && typeof voice.requiresNetwork === "boolean"
+    ))
+    && typeof state.loadingLocalVoices === "boolean"
+    && typeof state.localVoiceError === "string",
+  );
+}
+
+function validWindowStateEvent(event) {
+  return Boolean(
+    event
+    && event.schemaVersion === SCHEMA_VERSION
+    && typeof event.isMaximized === "boolean"
+    && typeof event.isFullScreen === "boolean",
   );
 }
 
@@ -209,6 +251,8 @@ export function parseInitialState(raw) {
     || !validAppPreferences(payload.data?.preferences)
     || typeof payload.data.library.total !== "number"
     || typeof payload.data?.window?.isMaximized !== "boolean"
+    || typeof payload.data?.window?.isFullScreen !== "boolean"
+    || !validSpeechState(payload.data?.speech)
     || !validCapabilities
   ) {
     throw new BridgeProtocolError("桌面通信返回的数据结构不完整。", "BRIDGE_INVALID_PAYLOAD");
@@ -388,12 +432,18 @@ function validFloatingSettings(settings) {
     settings
     && typeof settings.geometry === "string"
     && typeof settings.topmost === "boolean"
-    && nonNegativeNumber(settings.opacity) && settings.opacity >= 0.65 && settings.opacity <= 1
+    && nonNegativeNumber(settings.backgroundOpacity) && settings.backgroundOpacity <= 1
     && nonNegativeNumber(settings.fontSize) && settings.fontSize >= 14 && settings.fontSize <= 40
     && typeof settings.followReaderFont === "boolean"
     && FLOATING_BACKGROUNDS.has(settings.background)
-    && typeof settings.bilingual === "boolean",
+    && typeof settings.bilingual === "boolean"
+    && typeof settings.hoverDisplayEnabled === "boolean"
+    && (settings.textColor === "auto" || /^#[0-9A-Fa-f]{6}$/.test(settings.textColor)),
   );
+}
+
+function validSpeechChangedEvent(event) {
+  return Boolean(event && event.schemaVersion === SCHEMA_VERSION && validSpeechState(event.state));
 }
 
 function validFloatingState(data) {
@@ -723,9 +773,10 @@ function nativeFloating(nativeBridge) {
         && !Array.isArray(patch)
         && Object.entries(patch).every(([field, value]) => (
           FLOATING_SETTING_FIELDS[field] === typeof value
-          && (field !== "opacity" || nonNegativeNumber(value) && value >= 0.65 && value <= 1)
+          && (field !== "backgroundOpacity" || nonNegativeNumber(value) && value <= 1)
           && (field !== "fontSize" || nonNegativeNumber(value) && value >= 14 && value <= 40)
           && (field !== "background" || FLOATING_BACKGROUNDS.has(value))
+          && (field !== "textColor" || value === "auto" || /^#[0-9A-Fa-f]{6}$/.test(value))
         ));
       if (!validPatch) throw new BridgeProtocolError("悬浮朗读设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
       return parseBridgeResponse(
@@ -753,6 +804,27 @@ function nativeControls(nativeBridge) {
     closeWindow: () => nativeBridge.closeWindow(),
     startWindowMove: () => nativeBridge.startWindowMove(),
     startWindowResize: (edge) => nativeBridge.startWindowResize(edge),
+  };
+}
+
+function nativeSpeech(nativeBridge) {
+  return {
+    async updatePreferences(input) {
+      const patch = input?.patch;
+      const validPatch = patch
+        && !Array.isArray(patch)
+        && Object.keys(patch).length > 0
+        && Object.entries(patch).every(([field, value]) => (
+          (field === "ttsVoiceId" && typeof value === "string")
+          || (field === "ttsRate" && Number.isInteger(value) && value >= 80 && value <= 400)
+          || (field === "sentenceGapSeconds" && nonNegativeNumber(value) && value <= 1)
+        ));
+      if (!validPatch) throw new BridgeProtocolError("朗读设置参数无效。", "BRIDGE_INVALID_ARGUMENT");
+      return parseBridgeResponse(
+        await invokeWithResult(nativeBridge, "updateSpeechPreferences", [JSON.stringify(input)]),
+        validSpeechState,
+      );
+    },
   };
 }
 
@@ -793,6 +865,7 @@ function createNativeConnection(nativeBridge, initialState) {
     initialState,
     controls: nativeControls(nativeBridge),
     app: nativeApp(nativeBridge),
+    speech: nativeSpeech(nativeBridge),
     imports: nativeImports(nativeBridge),
     reader: nativeReader(nativeBridge),
     floating: nativeFloating(nativeBridge),
@@ -802,12 +875,31 @@ function createNativeConnection(nativeBridge, initialState) {
       subscriptions.push(() => bridgeErrorCallbacks.delete(callback));
     },
     onWindowStateChanged(callback) {
-      signalSubscription(nativeBridge.windowStateChanged, callback, subscriptions);
+      signalSubscription(nativeBridge.windowStateChanged, (raw) => {
+        try {
+          const event = parseJsonPayload(raw, "窗口状态事件无效。");
+          if (!validWindowStateEvent(event)) throw new BridgeProtocolError("窗口状态事件无效。", "BRIDGE_INVALID_PAYLOAD");
+          callback({ isMaximized: event.isMaximized, isFullScreen: event.isFullScreen });
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
     },
     onAppPreferencesChanged(callback) {
       signalSubscription(nativeBridge.appPreferencesChanged, (raw) => {
         try {
           callback(parseImportEvent(raw, validAppPreferences, "应用设置事件无效。"));
+        } catch (error) {
+          reportProtocolError(error);
+        }
+      }, subscriptions);
+    },
+    onSpeechPreferencesChanged(callback) {
+      signalSubscription(nativeBridge.speechPreferencesChanged, (raw) => {
+        try {
+          const event = parseJsonPayload(raw, "朗读设置事件无效。");
+          if (!validSpeechChangedEvent(event)) throw new BridgeProtocolError("朗读设置事件无效。", "BRIDGE_INVALID_PAYLOAD");
+          callback(event.state);
         } catch (error) {
           reportProtocolError(error);
         }
@@ -867,6 +959,12 @@ function createNativeConnection(nativeBridge, initialState) {
         }
       }, subscriptions);
     },
+    onFloatingPointerChanged(callback) {
+      signalSubscription(nativeBridge.floatingPointerChanged, (inside) => {
+        if (typeof inside === "boolean") callback(inside);
+        else reportProtocolError(new BridgeProtocolError("悬浮窗鼠标状态事件无效。", "BRIDGE_INVALID_PAYLOAD"));
+      }, subscriptions);
+    },
     dispose() {
       subscriptions.splice(0).forEach((disconnect) => disconnect());
     },
@@ -890,6 +988,7 @@ function createDemoConnection() {
   const readerPlaybackCallbacks = new Set();
   const floatingChangedCallbacks = new Set();
   const appPreferencesCallbacks = new Set();
+  const speechPreferencesCallbacks = new Set();
   const jobs = new Map();
   let jobSequence = 0;
   let readerSequence = 0;
@@ -898,6 +997,7 @@ function createDemoConnection() {
   let demoPosition = { chapterIndex: 0, charOffset: 0, progressPercent: 0 };
   let demoPlaybackState = demoPlayback(demoPosition);
   let demoFloating = demoFloatingState();
+  let demoSpeech = { ...initialState.data.speech, settings: { ...initialState.data.speech.settings } };
 
   const emit = (callbacks, payload) => callbacks.forEach((callback) => callback(payload));
   const response = (data) => ({ schemaVersion: SCHEMA_VERSION, ok: true, data, error: null });
@@ -1003,6 +1103,14 @@ function createDemoConnection() {
         initialState.data.preferences = next;
         emit(appPreferencesCallbacks, next);
         return response(next);
+      },
+    },
+    speech: {
+      async updatePreferences(input) {
+        demoSpeech = { ...demoSpeech, settings: { ...demoSpeech.settings, ...input.patch } };
+        initialState.data.speech = demoSpeech;
+        emit(speechPreferencesCallbacks, demoSpeech);
+        return response(demoSpeech);
       },
     },
     imports: {
@@ -1126,12 +1234,14 @@ function createDemoConnection() {
     onBridgeError() {},
     onWindowStateChanged() {},
     onAppPreferencesChanged(callback) { appPreferencesCallbacks.add(callback); },
+    onSpeechPreferencesChanged(callback) { speechPreferencesCallbacks.add(callback); },
     onImportProgress(callback) { progressCallbacks.add(callback); },
     onImportFinished(callback) { finishedCallbacks.add(callback); },
     onReaderOpened(callback) { readerOpenedCallbacks.add(callback); },
     onReaderSearchFinished(callback) { readerSearchCallbacks.add(callback); },
     onReaderPlaybackChanged(callback) { readerPlaybackCallbacks.add(callback); },
     onFloatingReaderChanged(callback) { floatingChangedCallbacks.add(callback); },
+    onFloatingPointerChanged() {},
     dispose() {
       jobs.forEach((job) => clearTimeout(job.timer));
       jobs.clear();
@@ -1142,6 +1252,7 @@ function createDemoConnection() {
       readerPlaybackCallbacks.clear();
       floatingChangedCallbacks.clear();
       appPreferencesCallbacks.clear();
+      speechPreferencesCallbacks.clear();
     },
   };
 }
