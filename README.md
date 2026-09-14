@@ -184,8 +184,6 @@ QYReader/
 - 双显示器验收需要真实的第二块屏幕；单屏上的几何单元测试不能替代它。
 - 打包后“不依赖本机 Python”的严格证明应在没有 Python/Node 的干净 Windows 环境中完成。
 
-更详细的实现与验收交接见 [HANDOFF.md](HANDOFF.md)。
-
 ## 许可证
 
 MIT License
