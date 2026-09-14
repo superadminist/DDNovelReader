@@ -10,7 +10,7 @@ if not exist "%PY%" (
   exit /b 1
 )
 
-echo 正在启动多多朗读...
+echo 正在启动启远阅读...
 "%PY%" -m novelreader.qt_main
 if errorlevel 1 (
   echo.

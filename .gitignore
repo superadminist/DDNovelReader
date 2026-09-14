@@ -22,7 +22,7 @@ dist/
 # 打包好的 exe（太大，不放 git，通过 GitHub Release 分发）
 releases/
 
-# 临时测试 spec（保留正式的 多多朗读.spec）
+# 临时测试 spec（保留正式的 QYReader.spec）
 _min_*.spec
 小说阅读器.spec
 

@@ -1,6 +1,10 @@
-# 多多朗读（DDNovelReader）
+# QYReader（启远阅读）
 
-多多朗读是面向 Windows 的本地小说阅读器。2.0 桌面版使用 **PySide6 / Qt WebEngine** 承载 React 界面，通过 QWebChannel 调用本地 Python 服务；书架、正文、进度和设置默认只保存在本机。
+<p align="center"><img src="assets/qyreader-icon.png" alt="QYReader 启远阅读图标" width="144"></p>
+
+启远阅读（QYReader）是面向 Windows 的本地小说阅读器。2.0 桌面版使用 **PySide6 / Qt WebEngine** 承载 React 界面，通过 QWebChannel 调用本地 Python 服务；书架、正文、进度和设置默认只保存在本机。
+
+品牌图标以“展开的书页通向远方晨光”为核心意象，深蓝代表沉静阅读，暖金代表探索与启程。仓库保留高清 PNG 源图，并由其生成包含 16/32/48/64/128/256 像素层级的 Windows ICO。
 
 ## 当前版本能力
 
@@ -46,7 +50,7 @@ Qt 主窗口 ───────┴────── 独立 Qt 悬浮窗
 - 导入源文件备份：`<安装目录>\data\cache\sources\`
 - 语音缓存：`<安装目录>\data\tts_cache\`
 
-安装版首次启动且 `<安装目录>\data` 不存在时，会把旧版 `%APPDATA%\DDNovelReader` 完整复制到新位置，旧目录不会删除。源码运行仍使用 `%APPDATA%\DDNovelReader`；测试可继续通过 `DOUBAO_NOVEL_DATA` 指定隔离目录。
+安装版首次启动且 `<安装目录>\data` 不存在时，会把旧版多多朗读的 `%APPDATA%\DDNovelReader` 完整复制到新位置，旧目录不会删除。为兼容已有开发数据，源码运行仍使用该历史目录；测试可继续通过 `DOUBAO_NOVEL_DATA` 指定隔离目录。
 
 应用不会上传书架、正文或阅读进度。只有选用 Edge 在线语音时，朗读文本会按 Edge TTS 的工作方式发送给该服务；本地 SAPI5 不需要网络。
 
@@ -142,15 +146,17 @@ build.bat
 
 ```bat
 .venv\Scripts\python.exe -m pip install -r build-requirements.txt
-.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm "多多朗读.spec"
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm "QYReader.spec"
 ```
 
-推荐发布产物为 `dist\installer\多多朗读-安装包-2.0.0.exe`。安装向导允许选择安装路径和是否创建桌面图标，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\DDNovelReader`，不需要管理员权限。发布前必须实际完成安装、首次数据迁移、覆盖升级和卸载保留数据验证，并检查 WebEngine 静态资源、导入/阅读、窗口退出清理，以及进程树中不存在 Node、Vite 开发服务器或外部 Python 解释器。仅仅“构建成功”不等于桌面验收通过。
+推荐发布产物为 `dist\installer\QYReader-Setup-2.0.0.exe`。安装向导允许选择安装路径和是否创建桌面图标，默认安装到系统 `Program Files\QYReader`，启动安装程序时会自动请求管理员权限。发布前必须实际完成安装、首次数据迁移、覆盖升级和卸载保留数据验证，并检查 WebEngine 静态资源、导入/阅读、窗口退出清理，以及进程树中不存在 Node、Vite 开发服务器或外部 Python 解释器。仅仅“构建成功”不等于桌面验收通过。
+
+推送到 `main` 后，GitHub Actions 的 `Windows installer` 工作流会在 Windows Runner 上运行测试和完整打包，并将安装包及 `SHA256SUMS.txt` 保存为 30 天有效的构建产物。也可以在 GitHub Actions 页面手动触发该工作流；生成文件不会提交进 Git。
 
 ## 目录结构
 
 ```text
-DDNovelReader/
+QYReader/
 ├─ novelreader/
 │  ├─ qt_main.py                 # Qt 正式入口
 │  ├─ qt_host.py                 # 主窗口、悬浮窗和离线 WebEngine 宿主
@@ -164,11 +170,11 @@ DDNovelReader/
 │  ├─ tests/                     # Bridge / Sites 测试
 │  └─ dist/client/               # Qt 加载的前端构建产物
 ├─ tests/                        # Python、Qt、性能与真实桌面验收
-├─ installer/DDNovelReader.iss   # Inno Setup 安装器定义
+├─ installer/QYReader.iss        # Inno Setup 安装器定义
 ├─ requirements.txt
 ├─ run.bat
 ├─ build.bat
-└─ 多多朗读.spec
+└─ QYReader.spec
 ```
 
 ## 已知环境边界

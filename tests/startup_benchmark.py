@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Measure time from process creation to the first visible DDNovelReader window."""
+"""Measure time from process creation to the first visible QYReader window."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _one_run(executable: Path, data_root: Path, timeout: float) -> float:
                     windows = _windows(pid)
                 except OSError:
                     continue
-                if any(item["title"] == "多多朗读" and item["visible"] for item in windows):
+                if any(item["title"] == "启远阅读" and item["visible"] for item in windows):
                     return time.perf_counter() - started
             if process.poll() is not None:
                 raise RuntimeError(f"process exited before showing a window: {process.returncode}")

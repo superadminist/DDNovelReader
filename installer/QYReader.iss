@@ -1,19 +1,19 @@
-#define MyAppName "多多朗读"
+#define MyAppName "启远阅读"
 #define MyAppVersion "2.0.0"
-#define MyAppPublisher "DDNovelReader"
-#define MyAppExeName "多多朗读.exe"
+#define MyAppPublisher "QYReader"
+#define MyAppExeName "QYReader.exe"
 
 [Setup]
 AppId={{F89DBA15-6137-422E-A264-391F8BBCCC1D}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\DDNovelReader
+DefaultDirName={autopf}\QYReader
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 OutputDir=..\dist\installer
-OutputBaseFilename=多多朗读-安装包-{#MyAppVersion}
+OutputBaseFilename=QYReader-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -30,7 +30,10 @@ Name: "chinesesimp"; MessagesFile: "{#SourcePath}\ChineseSimplified.isl"
 Name: "desktopicon"; Description: "创建桌面图标"; GroupDescription: "附加快捷方式："
 
 [Files]
-Source: "..\dist\多多朗读-快速启动\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\QYReader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+Type: files; Name: "{app}\多多朗读.exe"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

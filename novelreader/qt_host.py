@@ -227,7 +227,7 @@ class FloatingReaderWindow(QMainWindow):
         self._allow_close = False
         self._applying_geometry_clamp = False
         self._settings: dict = {}
-        self.setWindowTitle("多多朗读 - 悬浮朗读")
+        self.setWindowTitle("启远阅读 - 悬浮朗读")
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(360, 220)
@@ -349,7 +349,7 @@ class DesktopWindow(QMainWindow):
     def __init__(self, library: LibraryQueryService | None = None):
         super().__init__()
         _qa_trace("desktop-window:start")
-        self.setWindowTitle("多多朗读")
+        self.setWindowTitle("启远阅读")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
         # A translucent top-level QWebEngine window is periodically dropped by
         # Windows' compositor during interactive resize, exposing the desktop
@@ -425,7 +425,7 @@ class DesktopWindow(QMainWindow):
         self._load_error_shown = True
         QMessageBox.critical(
             self,
-            "多多朗读",
+            "启远阅读",
             "前端界面加载失败。请检查 prototype/dist/client 构建文件是否完整。",
         )
 
@@ -446,7 +446,7 @@ class DesktopWindow(QMainWindow):
             return
         icon = self.windowIcon()
         self._tray = QSystemTrayIcon(icon, self)
-        self._tray.setToolTip("多多朗读")
+        self._tray.setToolTip("启远阅读")
         menu = QMenu(self)
         self._tray_menu = menu
         self._tray_show_action = QAction("显示主界面", menu)

@@ -202,7 +202,7 @@ function WindowTitlebar({ controls, desktopMode, windowState }) {
   };
   return (
     <header className="mac-titlebar" onPointerDown={startMove} onDoubleClick={toggleMaximize}>
-      <div className="app-title">多多朗读</div>
+      <div className="app-title">启远阅读</div>
       <div className="titlebar-actions" data-no-window-drag><IconButton label="搜索"><MagnifyingGlass /></IconButton><div className="avatar">D</div></div>
       <div className="window-controls" data-no-window-drag>
         <button type="button" className="window-control" aria-label="最小化窗口" title="最小化窗口" onClick={controls.minimizeWindow}>
@@ -920,8 +920,8 @@ function SettingsModal({ preferences, speech, floatingSettings, version, pending
         <div className="settings-field color-setting"><span>朗读字体颜色</span><div><input aria-label="悬浮窗朗读字体颜色" title="选择颜色后立即切换为自定义配色" type="color" value={pickerColor} onChange={(event) => { const patch = floatingTextColorPatch(event.target.value); if (patch) onUpdateFloating(patch); }} /><button className={!customTextColor ? "selected" : ""} onClick={() => onUpdateFloating({ textColor: "auto" })}>自动配色</button><span className="color-setting-value">{customTextColor ? floatingSettings.textColor : "选择颜色即使用"}</span></div></div>
       </section>
       <section className="settings-section"><h3>启动</h3><label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label></section>
-      <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 DDNovelReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
-      <section className="settings-section about-section"><h3>关于</h3><p>多多朗读 {version || "2.0.0"} · Qt WebEngine 桌面版</p></section>
+      <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 QYReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
+      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.0"} · Qt WebEngine 桌面版</p></section>
     </div></div>
   );
 }

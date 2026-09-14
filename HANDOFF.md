@@ -1,4 +1,4 @@
-# 多多朗读 2.0 Qt 桌面版交付说明
+# QYReader（启远阅读）2.0 Qt 桌面版交付说明
 
 本文记录当前 Qt + React 重构的真实状态、架构约束、验证证据和剩余发布门禁。它取代旧版“把 Tk 原型落地”的实施前提示词，不再把已删除的 Tk UI 当作当前入口。
 
@@ -121,8 +121,8 @@ Qt DesktopWindow
 | 2 万字性能 | `python tests/stage3_performance_qa.py` | 本次 open 7.151 ms，窗口 0.019 ms，句子索引 25.593 ms |
 | 10 万字性能 | 同上 | 本次 open 10.176 ms，窗口 0.029 ms，句子索引 153.968 ms，窗口字符数 18,432 |
 | 旧 UI 残留门禁 | `tests/test_no_legacy_ui.py` | 正式入口不加载 Tk/Tkinterdnd2；旧 UI 模块不存在 |
-| PyInstaller one-file | `python -m PyInstaller --clean --noconfirm 多多朗读.spec`（收敛 DLL 路径） | 构建成功；EXE 约 250 MB，包含 QtWebEngine、语言包和离线前端资源 |
-| 冻结包自动验收 | `stage3_desktop_qa.py --executable dist\多多朗读.exe --single-process` | 内容库、阅读、搜索、书签、高亮、播放事件、截图和退出清理通过；无外部 Node/Python 子进程；此参数仅用于诊断当前图形会话 |
+| PyInstaller one-file | `python -m PyInstaller --clean --noconfirm QYReader.spec`（收敛 DLL 路径） | 构建成功；EXE 约 250 MB，包含 QtWebEngine、语言包和离线前端资源 |
+| 冻结包自动验收 | `stage3_desktop_qa.py --executable dist\QYReader.exe --single-process` | 内容库、阅读、搜索、书签、高亮、播放事件、截图和退出清理通过；无外部 Node/Python 子进程；此参数仅用于诊断当前图形会话 |
 
 本机 `PATH` 中的旧 Node 不支持当前 Vite，因此 Node 测试与构建必须使用 Node 20+ 的明确路径或修正 `PATH`。`build.bat` 已加入硬门禁；使用 Node 24.19 复跑已通过。
 
@@ -158,10 +158,10 @@ npm.cmd --prefix prototype run build
 python tests\stage3_performance_qa.py
 python tests\stage4_desktop_qa.py --node "C:\path\to\node.exe" --screenshot-dir "C:\path\outside\repo\stage4-final" --dpi 1,1.25,1.5,2
 build.bat
-python tests\stage3_desktop_qa.py --node "C:\path\to\node.exe" --executable "dist\多多朗读.exe" --screenshot "C:\path\outside\repo\stage6-final.png"
+python tests\stage3_desktop_qa.py --node "C:\path\to\node.exe" --executable "dist\QYReader.exe" --screenshot "C:\path\outside\repo\stage6-final.png"
 ```
 
-打包完成后不要只检查文件存在或构建退出码，应启动 `dist\多多朗读.exe` 执行第 7 节的 EXE 验收。`--single-process` 只能用于定位 QtWebEngine 图形会话问题，不得加入正式启动参数。
+打包完成后不要只检查文件存在或构建退出码，应启动 `dist\QYReader.exe` 执行第 7 节的 EXE 验收。`--single-process` 只能用于定位 QtWebEngine 图形会话问题，不得加入正式启动参数。
 
 ## 9. Git 与后续修改边界
 

@@ -20,7 +20,7 @@ class ApplicationPathTests(unittest.TestCase):
 
     def test_frozen_run_uses_data_beside_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            executable = Path(temp) / "installed" / "多多朗读.exe"
+            executable = Path(temp) / "installed" / "QYReader.exe"
             with patch.dict(os.environ, {paths.DATA_ENV: ""}):
                 with patch.object(paths, "is_frozen", return_value=True):
                     with patch.object(paths.sys, "executable", os.fspath(executable)):
@@ -38,7 +38,7 @@ class ApplicationPathTests(unittest.TestCase):
             )
             (legacy / "cache" / "sources").mkdir(parents=True)
             (legacy / "cache" / "sources" / "book.txt").write_text("正文", encoding="utf-8")
-            executable = root / "installed" / "多多朗读.exe"
+            executable = root / "installed" / "QYReader.exe"
 
             with patch.dict(os.environ, {"APPDATA": os.fspath(appdata), paths.DATA_ENV: ""}):
                 with patch.object(paths, "is_frozen", return_value=True):
@@ -63,7 +63,7 @@ class ApplicationPathTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"APPDATA": os.fspath(appdata), paths.DATA_ENV: ""}):
                 with patch.object(paths, "is_frozen", return_value=True):
-                    with patch.object(paths.sys, "executable", os.fspath(install / "多多朗读.exe")):
+                    with patch.object(paths.sys, "executable", os.fspath(install / "QYReader.exe")):
                         self.assertEqual(paths.ensure_data_dir(), target.resolve())
 
             self.assertEqual((target / "library.json").read_text(encoding="utf-8"), "installed")

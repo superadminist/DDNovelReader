@@ -89,7 +89,7 @@ if ONEDIR:
         a.scripts,
         [],
         exclude_binaries=True,
-        name="多多朗读",
+        name="QYReader",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -109,7 +109,7 @@ if ONEDIR:
         strip=False,
         upx=False,
         upx_exclude=[],
-        name="多多朗读-快速启动",
+        name="QYReader",
     )
 else:
     exe = EXE(
@@ -118,7 +118,7 @@ else:
         a.binaries,
         a.datas,
         [],
-        name="多多朗读",
+        name="QYReader",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,

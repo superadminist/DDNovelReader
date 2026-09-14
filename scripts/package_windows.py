@@ -8,8 +8,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "多多朗读.spec"
-INSTALLER_SCRIPT = ROOT / "installer" / "DDNovelReader.iss"
+SPEC = ROOT / "QYReader.spec"
+INSTALLER_SCRIPT = ROOT / "installer" / "QYReader.iss"
 
 
 def _freeze_environment() -> dict[str, str]:

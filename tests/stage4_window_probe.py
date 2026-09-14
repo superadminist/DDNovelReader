@@ -207,7 +207,7 @@ def _monitors() -> list[dict[str, object]]:
 
 def _with_roles(items: list[dict[str, object]]) -> list[dict[str, object]]:
     candidates = [item for item in items if item["visible"] or item["minimized"]]
-    main = next((item for item in items if item["title"] == "多多朗读"), None)
+    main = next((item for item in items if item["title"] == "启远阅读"), None)
     floating = next((item for item in items if "悬浮" in str(item["title"])), None)
     if main is None and candidates:
         main = max(candidates, key=lambda item: item["rect"]["width"] * item["rect"]["height"])

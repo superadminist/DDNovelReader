@@ -20,15 +20,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     app = QApplication(argv if argv is not None else sys.argv)
-    app.setApplicationName("多多朗读")
-    app.setOrganizationName("DDNovelReader")
+    app.setApplicationName("启远阅读")
+    app.setOrganizationName("QYReader")
 
     try:
         ensure_data_dir()
     except OSError as exc:
         QMessageBox.critical(
             None,
-            "多多朗读",
+            "启远阅读",
             "无法在安装目录创建或迁移 data 数据文件夹。\n"
             "请重新安装到当前用户拥有写入权限的路径。\n\n"
             f"{exc}",
@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if not index_path.is_file():
         QMessageBox.critical(
             None,
-            "多多朗读",
+            "启远阅读",
             "未找到前端构建文件。请先构建 prototype/dist/client/index.html。",
         )
         return 3

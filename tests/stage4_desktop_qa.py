@@ -134,7 +134,7 @@ def _resolve_window_host_pid(process: subprocess.Popen, window_probe: Path, time
                 windows = json.loads(result.stdout).get("windows", [])
             except json.JSONDecodeError:
                 continue
-            if any(item.get("title") == "多多朗读" for item in windows):
+            if any(item.get("title") == "启远阅读" for item in windows):
                 return candidate
         time.sleep(0.1)
     raise RuntimeError("Unable to locate the Python process that owns the Qt main window")

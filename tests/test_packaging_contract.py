@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PackagingContractTests(unittest.TestCase):
     def test_spec_packages_qt_frontend_without_legacy_tk_assets(self) -> None:
-        spec = (ROOT / "多多朗读.spec").read_text(encoding="utf-8")
+        spec = (ROOT / "QYReader.spec").read_text(encoding="utf-8")
 
         self.assertIn('ROOT / "novelreader" / "main.py"', spec)
         self.assertIn('ROOT / "prototype" / "dist" / "client"', spec)
@@ -27,7 +27,7 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('"PySide6.Qt3DRender"', spec)
         self.assertIn('"PySide6.QtQuick3D"', spec)
         self.assertIn("_without_qml_tree", spec)
-        self.assertIn('name="多多朗读-快速启动"', spec)
+        self.assertIn('name="QYReader"', spec)
         self.assertIn("COLLECT(", spec)
 
     def test_build_script_enforces_toolchain_and_build_order(self) -> None:
@@ -47,12 +47,13 @@ class PackagingContractTests(unittest.TestCase):
         self.assertEqual(requirements.strip(), "PyInstaller==6.21.0")
 
     def test_installer_supports_path_and_optional_desktop_icon(self) -> None:
-        installer = (ROOT / "installer" / "DDNovelReader.iss").read_text(encoding="utf-8")
+        installer = (ROOT / "installer" / "QYReader.iss").read_text(encoding="utf-8")
 
-        self.assertIn("DefaultDirName={localappdata}\\Programs\\DDNovelReader", installer)
+        self.assertIn("DefaultDirName={autopf}\\QYReader", installer)
+        self.assertIn("PrivilegesRequired=admin", installer)
         self.assertIn('Name: "desktopicon"', installer)
         self.assertIn("Tasks: desktopicon", installer)
-        self.assertIn('Source: "..\\dist\\多多朗读-快速启动\\*"', installer)
+        self.assertIn('Source: "..\\dist\\QYReader\\*"', installer)
         self.assertIn('MessagesFile: "{#SourcePath}\\ChineseSimplified.isl"', installer)
         language = (ROOT / "installer" / "ChineseSimplified.isl").read_text(encoding="utf-8")
         self.assertIn("LanguageID=$0804", language)
@@ -63,9 +64,19 @@ class PackagingContractTests(unittest.TestCase):
         package_script = (ROOT / "scripts" / "package_windows.py").read_text(encoding="utf-8")
 
         self.assertIn("scripts\\package_windows.py", script)
-        self.assertIn('SPEC = ROOT / "多多朗读.spec"', package_script)
-        self.assertIn('INSTALLER_SCRIPT = ROOT / "installer" / "DDNovelReader.iss"', package_script)
+        self.assertIn('SPEC = ROOT / "QYReader.spec"', package_script)
+        self.assertIn('INSTALLER_SCRIPT = ROOT / "installer" / "QYReader.iss"', package_script)
         self.assertLess(package_script.index('"--onedir"'), package_script.index("_run(iscc, INSTALLER_SCRIPT)"))
+
+    def test_github_actions_builds_and_uploads_windows_installer(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "windows-build.yml").read_text(encoding="utf-8")
+
+        self.assertIn("runs-on: windows-2022", workflow)
+        self.assertIn('node-version: "24"', workflow)
+        self.assertIn('python-version: "3.10"', workflow)
+        self.assertIn("python scripts/package_windows.py", workflow)
+        self.assertIn("actions/upload-artifact@v7", workflow)
+        self.assertIn("dist/installer/QYReader-Setup-*.exe", workflow)
 
 
 if __name__ == "__main__":
