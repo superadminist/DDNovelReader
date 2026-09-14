@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import queue
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
 from novelreader.book_loader import BookContent, Chapter
 from novelreader.playback_service import PlaybackService
-from novelreader.tts_engine import SpeechController
+from novelreader.tts_engine import SpeechController, synth_audio
 
 
 class FakeSpeechController:
@@ -347,6 +349,48 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertTrue(errors[0]["retryable"])
         self.assertEqual(errors[0]["fallback_backend"], "sapi")
 
+    def test_edge_synthesis_has_a_bounded_whole_request_timeout(self):
+        class HangingCommunicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                await asyncio.sleep(1)
+                if False:
+                    yield None
+
+        fake_edge_tts = types.SimpleNamespace(Communicate=HangingCommunicate)
+        with (
+            mock.patch("novelreader.tts_engine.edge_tts", fake_edge_tts),
+            mock.patch("novelreader.tts_engine._EDGE_SYNTH_TIMEOUT_SECONDS", 0.01),
+        ):
+            with self.assertRaises(asyncio.TimeoutError):
+                synth_audio("网络超时。", "zh-CN-XiaoxiaoNeural")
+
+    def test_edge_synthesis_retries_once_with_the_same_voice_and_rate(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-YunjianNeural")
+        controller.set_rate(236)
+        calls = []
+
+        def flaky_synth(text, voice, rate, timeout=None):
+            calls.append((text, voice, rate, timeout))
+            if len(calls) == 1:
+                raise ConnectionError("temporary network failure")
+            return b"recovered-audio"
+
+        with (
+            mock.patch("novelreader.tts_engine.synth_audio", side_effect=flaky_synth),
+            mock.patch("novelreader.tts_engine._EDGE_RETRY_DELAY_SECONDS", 0),
+        ):
+            audio = controller._edge_synthesize("网络恢复。")
+        controller.shutdown()
+
+        self.assertEqual(audio, b"recovered-audio")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[1:3] == ("zh-CN-YunjianNeural", 236) for call in calls))
+        self.assertTrue(all(0 < call[3] <= 20 for call in calls))
+
     def test_edge_resume_at_sentence_boundary_advances_without_waiting_for_consumed_offset(self):
         controller = SpeechController()
         controller.set_voice("zh-CN-XiaoxiaoNeural")
@@ -495,29 +539,28 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]["generation"], generation)
 
-    def test_edge_prepare_starts_current_and_lookahead_together(self):
+    def test_edge_prepare_prioritizes_current_with_two_lookahead_workers(self):
         controller = SpeechController()
         controller.set_voice("zh-CN-XiaoxiaoNeural")
         started = []
         started_lock = threading.Lock()
-        four_started = threading.Event()
+        three_started = threading.Event()
         release = threading.Event()
 
         def synthesize(text):
             with started_lock:
                 started.append(text)
-                if len(started) >= 4:
-                    four_started.set()
+                if len(started) >= 3:
+                    three_started.set()
             release.wait(1)
             return text.encode("utf-8")
 
         controller._edge_synthesize = synthesize
         controller.prepare(make_book("第一句。第二句！第三句？第四句。", ""), 0, 0)
         try:
-            self.assertTrue(four_started.wait(0.5))
-            self.assertEqual(set(started[:4]), {
-                "第一句。", "第二句！", "第三句？", "第四句。",
-            })
+            self.assertTrue(three_started.wait(0.5))
+            self.assertEqual(started[0], "第一句。")
+            self.assertEqual(set(started[1:3]), {"第二句！", "第三句？"})
         finally:
             release.set()
             controller.shutdown()
@@ -561,17 +604,46 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertEqual(observed["request"], (4, "第二句！", 0.10))
         self.assertEqual(controller.drain(), [])
 
+    def test_edge_continuation_reports_buffering_while_network_audio_is_pending(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+
+        class DelayedPrefetch:
+            def __init__(self):
+                self.calls = 0
+
+            def get_expected(self, clean_off, text, timeout=None):
+                self.calls += 1
+                return (self.calls >= 2), b"edge-second" if self.calls >= 2 else None
+
+            def close(self):
+                pass
+
+        controller._edge_prefetch = DelayedPrefetch()
+        controller._speak_edge_play = lambda audio, generation, start_event=None: True
+        controller._book = make_book()
+        controller._state = "playing"
+        controller._gen = 8
+
+        with mock.patch("novelreader.tts_engine._EDGE_BUFFERING_NOTICE_SECONDS", 0):
+            result = controller._speak_edge(
+                "第二句！", 8, 0, 4, 4, "第一句。第二句！", 8
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(controller.drain(), [{"type": "buffering", "generation": 8}])
+
     def test_edge_prefetch_synthesizes_ahead_concurrently_and_consumes_in_order(self):
         release = threading.Event()
-        three_started = threading.Event()
+        two_started = threading.Event()
         started = []
         lock = threading.Lock()
 
         def synthesize(text):
             with lock:
                 started.append(text)
-                if len(started) >= 3:
-                    three_started.set()
+                if len(started) >= 2:
+                    two_started.set()
             release.wait(1)
             return text.encode("utf-8")
 
@@ -579,7 +651,7 @@ class SpeechControllerContractTests(unittest.TestCase):
             "novelreader.tts_engine", fromlist=["_EdgePrefetch"]
         )._EdgePrefetch(synthesize, "第一句。第二句！第三句？", 0, 5)
         try:
-            self.assertTrue(three_started.wait(0.5))
+            self.assertTrue(two_started.wait(0.5))
             release.set()
             for offset, text in ((0, "第一句。"), (4, "第二句！"), (8, "第三句？")):
                 ready, audio = prefetch.get_expected(offset, text, timeout=1)
@@ -617,6 +689,35 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertEqual(sapi_calls, ["第二句！", "第三句？"])
         errors = [event for event in controller.drain() if event["type"] == "error"]
         self.assertEqual(len(errors), 1)
+
+    def test_edge_recent_audio_is_reused_after_restart(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        controller.set_book_id("restart-book")
+        calls = []
+
+        def synthesize(text):
+            calls.append(text)
+            return b"sentence-audio"
+
+        def play(audio, generation, start_event=None):
+            if start_event is not None:
+                controller._post(dict(start_event), generation)
+            return True
+
+        controller._edge_synthesize = synthesize
+        controller._speak_edge_play = play
+        book = make_book("第一句。", "")
+        try:
+            controller.start(book, 0, 0)
+            self._wait_for_stop(controller)
+            controller.drain()
+            controller.start(book, 0, 0)
+            self._wait_for_stop(controller)
+        finally:
+            controller.shutdown()
+
+        self.assertEqual(calls, ["第一句。"])
 
 
 if __name__ == "__main__":

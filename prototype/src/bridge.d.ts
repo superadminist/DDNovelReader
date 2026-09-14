@@ -376,6 +376,7 @@ export interface ReaderPlaybackEvent {
     | "state"
     | "sentenceStart"
     | "sentenceDone"
+    | "buffering"
     | "finished"
     | "fallback"
     | "error";

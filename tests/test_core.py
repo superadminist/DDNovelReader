@@ -200,7 +200,7 @@ def test_tts_logic():
     ctl.stop()
     check("再次启动正常", ctl.is_stopped())
 
-    # v1.6：批量预取缓冲（n+30 上限）
+    # v1.6：批量预取缓冲（小窗口，避免在线请求突发）
     from novelreader.tts_engine import _EdgePrefetch
     pcontent = "第一句。第二句。第三句。第四句。第五句。第六句。第七句。第八句。第九句。第十句。"
     made = []
@@ -223,7 +223,7 @@ def test_tts_logic():
         set(made[:5]) == {"第一句。", "第二句。", "第三句。", "第四句。", "第五句。"},
         str(made[:5]),
     )
-    check("默认预取上限为 30", _EdgePrefetch.MAX_AHEAD == 30, str(_EdgePrefetch.MAX_AHEAD))
+    check("默认预取上限为 8", _EdgePrefetch.MAX_AHEAD == 8, str(_EdgePrefetch.MAX_AHEAD))
     pf.close()
 
     # v1.7：句子停顿间隔设置

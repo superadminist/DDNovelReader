@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from novelreader.library_service import (
-    DEFAULT_COVER_URL,
+    DEFAULT_COVER_URLS,
     LibraryDataError,
     LibraryQueryService,
     default_library_path,
@@ -63,7 +63,12 @@ class LibraryQueryServiceTests(unittest.TestCase):
         self.assertEqual(latest["progressPercent"], 100)
         self.assertEqual(latest["currentChapterTitle"], "第一章")
         self.assertEqual(latest["chapterCount"], 2)
-        self.assertEqual(latest["coverUrl"], DEFAULT_COVER_URL)
+        self.assertIn(latest["coverUrl"], DEFAULT_COVER_URLS)
+        self.assertEqual(
+            latest["coverUrl"],
+            LibraryQueryService._book_summary("book-a", {"title": "任意标题"})["coverUrl"],
+        )
+        self.assertNotEqual(latest["coverUrl"], result["books"][1]["coverUrl"])
         self.assertNotIn("path", latest)
         self.assertNotIn("source_bak", latest)
         self.assertEqual(self.path.read_bytes(), before_bytes)

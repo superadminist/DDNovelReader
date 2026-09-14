@@ -320,6 +320,8 @@ class PlaybackService:
                 raw["chapter_idx"], raw["char_offset"]
             )
             return self._event("sentenceDone")
+        if event_type == "buffering":
+            return self._event("buffering")
         if event_type == "chapter":
             chapter_index = int(raw.get("chapter_idx", 0))
             if 0 <= chapter_index < len(self._book.chapters):

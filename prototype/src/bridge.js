@@ -1,10 +1,10 @@
 export const SCHEMA_VERSION = 2;
 
 const DEMO_BOOKS = [
-  { id: "demo-1", title: "高效能人士的七个习惯", author: "", format: "EPUB", progressPercent: 36, chapterIndex: 2, chapterCount: 12, currentChapterTitle: "第 3 章 · 要事第一", lastReadAt: null, totalChars: 0, coverUrl: "covers/mountains.png" },
-  { id: "demo-2", title: "创意是一种习惯", author: "", format: "EPUB", progressPercent: 68, chapterIndex: 7, chapterCount: 10, currentChapterTitle: "第 8 章 · 保持好奇", lastReadAt: null, totalChars: 0, coverUrl: "covers/creative.png" },
-  { id: "demo-3", title: "财富自由之路", author: "", format: "EPUB", progressPercent: 52, chapterIndex: 5, chapterCount: 9, currentChapterTitle: "第 6 章 · 运气的成分", lastReadAt: null, totalChars: 0, coverUrl: "covers/money.png" },
-  { id: "demo-4", title: "星火", author: "", format: "EPUB", progressPercent: 12, chapterIndex: 0, chapterCount: 8, currentChapterTitle: "序章 · 启程", lastReadAt: null, totalChars: 0, coverUrl: "covers/library.png" },
+  { id: "demo-1", title: "高效能人士的七个习惯", author: "", format: "EPUB", progressPercent: 36, chapterIndex: 2, chapterCount: 12, currentChapterTitle: "第 3 章 · 要事第一", lastReadAt: null, totalChars: 0, coverUrl: "covers/library-indigo.jpg" },
+  { id: "demo-2", title: "创意是一种习惯", author: "", format: "EPUB", progressPercent: 68, chapterIndex: 7, chapterCount: 10, currentChapterTitle: "第 8 章 · 保持好奇", lastReadAt: null, totalChars: 0, coverUrl: "covers/library-sage.jpg" },
+  { id: "demo-3", title: "财富自由之路", author: "", format: "EPUB", progressPercent: 52, chapterIndex: 5, chapterCount: 9, currentChapterTitle: "第 6 章 · 运气的成分", lastReadAt: null, totalChars: 0, coverUrl: "covers/library-amber.jpg" },
+  { id: "demo-4", title: "星火", author: "", format: "EPUB", progressPercent: 12, chapterIndex: 0, chapterCount: 8, currentChapterTitle: "序章 · 启程", lastReadAt: null, totalChars: 0, coverUrl: "covers/library-night.jpg" },
 ];
 
 const DEMO_READER_TEXT = "每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。\n财富并不只是一串数字，它更像一种选择权：你能决定把时间留给谁，也能决定拒绝什么。\n创造财富的法则，往往只是代表了财富创造的方式。";
@@ -45,7 +45,7 @@ function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
 }
 
 const EMPTY_DATA = {
-  app: { version: "2.0.2" },
+  app: { version: "2.0.3" },
   library: { books: [], total: 0 },
   preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, closeToTray: false, autoCheckUpdates: true, startupBookId: "" },
   window: { isMaximized: false, isFullScreen: false },
@@ -60,7 +60,7 @@ const EMPTY_DATA = {
   },
   softwareUpdate: {
     status: "idle",
-    currentVersion: "2.0.2",
+    currentVersion: "2.0.3",
     latestVersion: "",
     lastCheckedAt: "",
     message: "尚未检查更新。",
@@ -99,7 +99,7 @@ const BOOK_FIELDS = {
 const DUPLICATE_MODES = new Set(["cancel", "overwrite", "reparse"]);
 const PLAYBACK_STATUSES = new Set(["idle", "playing", "paused", "finished", "error"]);
 const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", "nextSentence"]);
-const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "finished", "fallback", "error"]);
+const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "buffering", "finished", "fallback", "error"]);
 const FLOATING_BACKGROUNDS = new Set(["light", "sepia", "dark"]);
 const APP_THEMES = new Set(["白天", "护眼", "夜间", "米黄"]);
 const SOFTWARE_UPDATE_STATUSES = new Set(["idle", "checking", "upToDate", "available", "skipped", "downloading", "ready", "installing", "error"]);
@@ -1103,7 +1103,7 @@ function createDemoConnection() {
       currentChapterTitle: "尚未开始阅读",
       lastReadAt: Date.now() / 1000,
       totalChars: 0,
-      coverUrl: "covers/library.png",
+      coverUrl: `covers/library-${["indigo", "sage", "amber", "night"][initialState.data.library.books.length % 4]}.jpg`,
     };
     initialState.data.library.books = [book, ...initialState.data.library.books];
     initialState.data.library.total = initialState.data.library.books.length;

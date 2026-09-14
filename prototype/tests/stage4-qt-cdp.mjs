@@ -746,8 +746,31 @@ async function primaryScenario() {
     throw new Error(`Disabled idle-context mode affected hover chrome: ${JSON.stringify(disabledHoverLayout)}`);
   }
   evidence.disabledHover = await capture(floating, "stage4-disabled-hover-controls.png");
-  if (!await clickLabel(floating, "显示双语")) throw new Error("Bilingual control missing");
-  state = await waitForFloatingState(main, (value) => value.settings.bilingual === true, "Bilingual setting did not toggle");
+  const footerContract = await evaluate(floating, `(() => {
+    const opacity = document.querySelector('input[aria-label="悬浮窗背景透明度"]');
+    const resize = document.querySelector('.floating-resize-control');
+    const bilingual = [...document.querySelectorAll('button')].some((node) => {
+      const label = node.textContent || node.getAttribute('aria-label') || '';
+      return label.includes('中 / EN') || label.includes('中/EN') || label.includes('显示双语');
+    });
+    return {
+      bilingual,
+      opacityWidth: opacity?.getBoundingClientRect().width || 0,
+      resizeWidth: resize?.getBoundingClientRect().width || 0,
+      resizeHeight: resize?.getBoundingClientRect().height || 0,
+    };
+  })()`);
+  if (footerContract.bilingual || footerContract.opacityWidth < 60 || footerContract.opacityWidth > 120
+      || footerContract.resizeWidth < 30 || footerContract.resizeHeight < 30) {
+    throw new Error(`Floating compact footer contract failed: ${JSON.stringify(footerContract)}`);
+  }
+  state = await waitForFloatingState(main, (value) => (
+    value.settings.topmost === true
+    && value.settings.backgroundOpacity === 0
+    && value.settings.textColor === "#123ABC"
+    && value.settings.followReaderFont === true
+    && value.settings.hoverDisplayEnabled === false
+  ), "Floating settings did not settle");
   if (state.settings.topmost !== true || !roleWindow(probe(), "floating").topmost) throw new Error("Topmost=true did not reach the native window");
   if (state.settings.fontSize !== opened.settings.fontSize) throw new Error("Follow-reader-font did not restore the main reader size");
   if (state.settings.background === settingsBefore.background) throw new Error("Floating background did not change");
@@ -755,7 +778,6 @@ async function primaryScenario() {
   if (state.settings.textColor !== "#123ABC") throw new Error("Floating text color did not persist");
   if (state.settings.followReaderFont !== true) throw new Error("Follow-reader-font setting did not restore");
   if (state.settings.hoverDisplayEnabled !== false) throw new Error("Idle-context setting did not persist");
-  if (state.settings.bilingual !== true) throw new Error("Bilingual setting did not toggle");
 
   const beforeMove = roleWindow(probe(), "floating").rect;
   const dragPoint = await evaluate(floating, `(() => {
@@ -775,7 +797,7 @@ async function primaryScenario() {
 
   const beforeResize = afterMove;
   const resizePoint = await evaluate(floating, `(() => {
-    const node = document.querySelector('.window-resize-handle.bottomRight');
+    const node = document.querySelector('.floating-resize-control');
     const rect = node.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);

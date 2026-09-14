@@ -115,7 +115,7 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["library"]["total"], 1)
-        self.assertEqual(payload["data"]["app"]["version"], "2.0.2")
+        self.assertEqual(payload["data"]["app"]["version"], "2.0.3")
         self.assertEqual(payload["data"]["preferences"]["theme"], "护眼")
         self.assertTrue(payload["data"]["preferences"]["autoOpenLast"])
         self.assertFalse(payload["data"]["preferences"]["closeToTray"])
@@ -210,20 +210,20 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(rejected["error"]["code"], "INVALID_REQUEST")
 
     def test_software_update_check_download_skip_install_and_open_page(self):
-        installer_path = Path(self.tempdir.name) / "QYReader-Setup-2.0.3.exe"
+        installer_path = Path(self.tempdir.name) / "QYReader-Setup-2.0.4.exe"
 
         class FakeSoftwareUpdates:
             @staticmethod
             def check_latest():
                 return ReleaseInfo(
-                    version="2.0.3",
-                    tag="v2.0.3",
-                    release_url="https://github.com/superadminist/QYReader/releases/tag/v2.0.3",
+                    version="2.0.4",
+                    tag="v2.0.4",
+                    release_url="https://github.com/superadminist/QYReader/releases/tag/v2.0.4",
                     published_at="2026-09-14T09:00:00Z",
-                    installer_name="QYReader-Setup-2.0.3.exe",
-                    installer_url="https://github.com/superadminist/QYReader/releases/download/v2.0.3/QYReader-Setup-2.0.3.exe",
+                    installer_name="QYReader-Setup-2.0.4.exe",
+                    installer_url="https://github.com/superadminist/QYReader/releases/download/v2.0.4/QYReader-Setup-2.0.4.exe",
                     installer_size=9,
-                    checksum_url="https://github.com/superadminist/QYReader/releases/download/v2.0.3/SHA256SUMS.txt",
+                    checksum_url="https://github.com/superadminist/QYReader/releases/download/v2.0.4/SHA256SUMS.txt",
                 )
 
             @staticmethod
@@ -240,16 +240,16 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(started["data"]["status"], "checking")
         self._wait_for_update_status(update_spy, "available", mark)
 
-        skipped = json.loads(self.bridge.skipSoftwareUpdate(json.dumps({"version": "2.0.3"})))
+        skipped = json.loads(self.bridge.skipSoftwareUpdate(json.dumps({"version": "2.0.4"})))
         self.assertEqual(skipped["data"]["status"], "skipped")
         metadata = self.bridge._app.update_metadata()
-        self.assertEqual(metadata["skippedVersion"], "2.0.3")
+        self.assertEqual(metadata["skippedVersion"], "2.0.4")
 
         mark = update_spy.count()
         self.bridge.checkSoftwareUpdate(json.dumps({"manual": True}))
         self._wait_for_update_status(update_spy, "available", mark)
         mark = update_spy.count()
-        downloading = json.loads(self.bridge.downloadSoftwareUpdate(json.dumps({"version": "2.0.3"})))
+        downloading = json.loads(self.bridge.downloadSoftwareUpdate(json.dumps({"version": "2.0.4"})))
         self.assertEqual(downloading["data"]["status"], "downloading")
         ready = self._wait_for_update_status(update_spy, "ready", mark)
         self.assertEqual(ready["progressPercent"], 100)
@@ -257,7 +257,7 @@ class DesktopBridgeTests(unittest.TestCase):
 
         opened = json.loads(self.bridge.openSoftwareUpdatePage("release"))
         self.assertTrue(opened["ok"])
-        self.assertTrue(self.window.opened_url.endswith("/tag/v2.0.3"))
+        self.assertTrue(self.window.opened_url.endswith("/tag/v2.0.4"))
         installing = json.loads(self.bridge.installSoftwareUpdate())
         self.assertEqual(installing["data"]["status"], "installing")
         self.assertEqual(self.window.launched_installer, str(installer_path))

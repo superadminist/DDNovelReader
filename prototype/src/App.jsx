@@ -1,4 +1,4 @@
-import { memo, startTransition, useEffect, useReducer, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   ArrowLeft,
   Article,
@@ -19,10 +19,12 @@ import {
   Play,
   Plus,
   PushPin,
+  Resize,
   SidebarSimple,
   SpeakerHigh,
   TextAa,
   UploadSimple,
+  WifiHigh,
   X,
 } from "@phosphor-icons/react";
 import { connectBridge } from "./bridge.js";
@@ -56,7 +58,7 @@ const DEFAULT_APP_PREFERENCES = {
 
 const DEFAULT_SOFTWARE_UPDATE = {
   status: "idle",
-  currentVersion: "2.0.2",
+  currentVersion: "2.0.3",
   latestVersion: "",
   lastCheckedAt: "",
   message: "尚未检查更新。",
@@ -116,6 +118,56 @@ const EMPTY_FLOATING_STATE = {
   playback: { status: "idle", position: { chapterIndex: 0, charOffset: 0, progressPercent: 0 }, sentence: null, requestedBackend: "sapi", activeBackend: null, fallbackActive: false },
   context: { chapterIndex: 0, chapterTitle: "", previous: null, current: null, next: null },
 };
+
+const NETWORK_WAIT_NOTICE = {
+  kind: "waiting",
+  message: "网络有点慢，正在连接语音…",
+};
+const NETWORK_FALLBACK_NOTICE = {
+  kind: "fallback",
+  message: "网络波动，已切换系统语音",
+};
+
+function usePlaybackNetworkNotice(initialNotice = null) {
+  const [notice, setNotice] = useState(initialNotice);
+  const hideTimerRef = useRef(null);
+  const handlePlaybackEvent = useCallback((event) => {
+    if (event.reason === "buffering") {
+      window.clearTimeout(hideTimerRef.current);
+      setNotice(NETWORK_WAIT_NOTICE);
+      return;
+    }
+    if (event.reason === "fallback" && event.error?.code === "EDGE_OFFLINE_FALLBACK") {
+      window.clearTimeout(hideTimerRef.current);
+      setNotice(NETWORK_FALLBACK_NOTICE);
+      hideTimerRef.current = window.setTimeout(() => setNotice(null), 6000);
+      return;
+    }
+    if (event.reason === "sentenceStart") {
+      setNotice((current) => current?.kind === "waiting" ? null : current);
+    } else if (["finished", "error", "state"].includes(event.reason)) {
+      window.clearTimeout(hideTimerRef.current);
+      setNotice(null);
+    }
+  }, []);
+  useEffect(() => () => window.clearTimeout(hideTimerRef.current), []);
+  return [notice, handlePlaybackEvent];
+}
+
+function NetworkStatusHint({ notice, compact = false }) {
+  if (!notice) return null;
+  return (
+    <div
+      className={`network-status-hint ${notice.kind} ${compact ? "compact" : ""}`}
+      role="status"
+      aria-label={notice.message}
+      title={notice.message}
+    >
+      <span className="network-status-icon" aria-hidden="true"><WifiHigh weight="bold" /></span>
+      <span className="network-status-copy">{notice.message}</span>
+    </div>
+  );
+}
 
 function readerReducer(state, action) {
   switch (action.type) {
@@ -324,7 +376,7 @@ function DemoReaderToolbar({ onBack, fontSize, setFontSize, floating, setFloatin
   );
 }
 
-function DemoPlayer({ playing, setPlaying, setFloating }) {
+function DemoPlayer({ playing, setPlaying, setFloating, networkNotice }) {
   const [progress, setProgress] = useState(43);
   useEffect(() => {
     if (!playing) return undefined;
@@ -333,7 +385,7 @@ function DemoPlayer({ playing, setPlaying, setFloating }) {
   }, [playing]);
   return (
     <div className="player-bar">
-      <div className="player-copy"><strong>第六章　运气的成分</strong><small>正在朗读第 18 段</small></div>
+      <div className="player-copy"><strong>第六章　运气的成分</strong>{networkNotice ? <NetworkStatusHint notice={networkNotice} /> : <small>正在朗读第 18 段</small>}</div>
       <div className="player-controls"><IconButton label="上一句"><CaretLeft weight="bold" /></IconButton><button className="play-button" aria-label={playing ? "暂停" : "播放"} onClick={() => setPlaying(!playing)}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句"><CaretRight weight="bold" /></IconButton></div>
       <div className="player-slider"><span>08:24</span><input type="range" min="0" max="100" value={progress} onChange={(event) => setProgress(Number(event.target.value))} /><span>19:42</span></div>
       <div className="player-tools"><button className="speed">1.0×</button><IconButton label="音量"><SpeakerHigh /></IconButton><IconButton label="打开悬浮朗读" onClick={() => setFloating(true)}><CornersOut /></IconButton></div>
@@ -341,7 +393,7 @@ function DemoPlayer({ playing, setPlaying, setFloating }) {
   );
 }
 
-function DemoReader({ setPage, fontSize, setFontSize, playing, setPlaying, floating, setFloating }) {
+function DemoReader({ setPage, fontSize, setFontSize, playing, setPlaying, floating, setFloating, networkNotice }) {
   const [chapter, setChapter] = useState(6);
   return (
     <section className="reader-page">
@@ -350,12 +402,12 @@ function DemoReader({ setPage, fontSize, setFontSize, playing, setPlaying, float
         <aside className="toc-panel"><div className="toc-title"><span>目录</span><small>9 章</small></div><div className="toc-list">{chapters.map((item, index) => <button key={item} className={chapter === index ? "selected" : ""} onClick={() => setChapter(index)}><span>{String(index + 1).padStart(2, "0")}</span>{item}</button>)}</div><div className="toc-footer"><UploadSimple /> 已同步阅读进度</div></aside>
         <article className="reading-sheet" style={{ "--reading-size": `${fontSize}px` }}><p className="chapter-index">CHAPTER 06</p><h1>运气的成分</h1><div className="title-rule" /><div className="reading-copy">{paragraphs.map((paragraph, index) => <p key={paragraph} className={index === 0 ? "speaking" : ""}>{paragraph}</p>)}</div><div className="page-count">126 / 298</div></article>
       </div>
-      <DemoPlayer playing={playing} setPlaying={setPlaying} setFloating={setFloating} />
+      <DemoPlayer playing={playing} setPlaying={setPlaying} setFloating={setFloating} networkNotice={networkNotice} />
     </section>
   );
 }
 
-function DemoFloatingReader({ playing, setPlaying, onClose, bilingual, setBilingual }) {
+function DemoFloatingReader({ playing, setPlaying, onClose }) {
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
   const initialWidth = Math.min(560, window.innerWidth - 96);
@@ -389,20 +441,8 @@ function DemoFloatingReader({ playing, setPlaying, onClose, bilingual, setBiling
       <div className="floating-dragbar" onPointerDown={startDrag} onPointerMove={drag} onPointerUp={() => { dragRef.current = null; }}>
         <div><span className="live-dot" /> 第六章　运气的成分</div><div className="floating-window-actions"><IconButton label="固定在最前"><PushPin /></IconButton><IconButton label="关闭悬浮窗" onClick={onClose}><X /></IconButton></div>
       </div>
-      <div className="floating-content"><p className="context-line">创造财富的法则，往往只是代表了财富创造的方式。</p><p className="current-line">每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。</p>{bilingual && <p className="translation">Three million dollars a year feels enormous to most people, yet barely registers to others.</p>}<p className="next-line">300万美元算什么？</p></div>
-      <div className="floating-controls"><div className="control-cluster"><IconButton label="上一句"><CaretLeft weight="fill" /></IconButton><button className="floating-play" aria-label={playing ? "暂停" : "播放"} onClick={() => setPlaying(!playing)}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句"><CaretRight weight="fill" /></IconButton></div><div className="mini-progress"><span /></div><div className="control-cluster"><button className={`language-toggle ${bilingual ? "on" : ""}`} onClick={() => setBilingual(!bilingual)}>中 / EN</button><IconButton label="缩小文字"><Minus /></IconButton><IconButton label="放大文字"><Plus /></IconButton></div></div>
-      <span className="resize-hint">拖动缩放</span>
-      <button
-        className="resize-handle"
-        aria-label="拖动缩放悬浮窗"
-        title="拖动缩放悬浮窗"
-        onPointerDown={startResize}
-        onPointerMove={resize}
-        onPointerUp={() => { resizeRef.current = null; }}
-        onPointerCancel={() => { resizeRef.current = null; }}
-      >
-        <CornersOut />
-      </button>
+      <div className="floating-content"><p className="context-line">创造财富的法则，往往只是代表了财富创造的方式。</p><p className="current-line">每年300万美元在大多数人眼里是一笔大钱，但是在另一些人眼里却不值一提。</p><p className="next-line">300万美元算什么？</p></div>
+      <div className="floating-controls"><div className="control-cluster"><IconButton label="上一句"><CaretLeft weight="fill" /></IconButton><button className="floating-play" aria-label={playing ? "暂停" : "播放"} onClick={() => setPlaying(!playing)}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句"><CaretRight weight="fill" /></IconButton></div><div className="mini-progress"><span /></div><button className="floating-resize-control" aria-label="拖动调整悬浮窗大小" title="拖动调整悬浮窗大小" onPointerDown={startResize} onPointerMove={resize} onPointerUp={() => { resizeRef.current = null; }} onPointerCancel={() => { resizeRef.current = null; }}><Resize weight="bold" /></button></div>
     </div>
   );
 }
@@ -412,18 +452,17 @@ function FloatingSentence({ tone, sentence, emptyText }) {
   return <p className={`floating-sentence ${tone}`} data-sentence-role={tone} data-sentence-id={identity}>{sentence?.text || emptyText}</p>;
 }
 
-function FloatingLyricLayer({ context, bilingual, className = "", hidden = false }) {
+function FloatingLyricLayer({ context, className = "", hidden = false }) {
   return (
     <div className={`floating-lyric-layer ${className}`} aria-hidden={hidden ? "true" : undefined} data-current-sentence-id={floatingSentenceIdentity(context.current)}>
       <FloatingSentence tone="previous" sentence={context.previous} emptyText="已经到达本章开头" />
       <FloatingSentence tone="current" sentence={context.current} emptyText="开始朗读后，这里会显示当前句" />
-      {bilingual ? <p className="floating-bilingual-note">双语偏好已开启；当前内容未提供译文。</p> : null}
       <FloatingSentence tone="next" sentence={context.next} emptyText="已经到达本章结尾" />
     </div>
   );
 }
 
-function NativeFloatingReader({ state, loading, error, pointerInside, onPointerInsideChange, pendingCommand, pendingSetting, onCommand, onSettings, onClose, onMove, onResize }) {
+function NativeFloatingReader({ state, loading, error, networkNotice, pointerInside, onPointerInsideChange, pendingCommand, pendingSetting, onCommand, onSettings, onClose, onMove, onResize }) {
   const { settings, playback, context } = state;
   const playing = playback.status === "playing";
   const canControlPlayback = Boolean(state.sessionId) && !pendingCommand;
@@ -504,7 +543,7 @@ function NativeFloatingReader({ state, loading, error, pointerInside, onPointerI
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [renderedContext.previous?.text, renderedContext.current?.text, renderedContext.next?.text, visibleFontSize, settings.bilingual, error, hoverDisplayEnabled, pointerInside]);
+  }, [renderedContext.previous?.text, renderedContext.current?.text, renderedContext.next?.text, visibleFontSize, error, hoverDisplayEnabled, pointerInside]);
   const changeFontByWheel = (event) => {
     event.preventDefault();
     const change = floatingFontWheelChange(
@@ -571,10 +610,10 @@ function NativeFloatingReader({ state, loading, error, pointerInside, onPointerI
         </div>
       </header>
       <section ref={contentRef} className="floating-content" aria-live="polite" title="滚动鼠标滚轮可调整字号">
-        <FloatingLyricLayer context={renderedContext} bilingual={settings.bilingual} className={lyricDirection ? `active enter-${lyricDirection}` : "active"} />
-        {departingLyric ? <FloatingLyricLayer context={departingLyric.context} bilingual={settings.bilingual} className={`departing exit-${departingLyric.direction}`} hidden /> : null}
+        <FloatingLyricLayer context={renderedContext} className={lyricDirection ? `active enter-${lyricDirection}` : "active"} />
+        {departingLyric ? <FloatingLyricLayer context={departingLyric.context} className={`departing exit-${departingLyric.direction}`} hidden /> : null}
       </section>
-      {error ? <div className="floating-error" role="alert">{error}</div> : null}
+      {error ? <div className="floating-error" role="alert">{error}</div> : networkNotice ? <div className="floating-network-slot"><NetworkStatusHint notice={networkNotice} compact /></div> : null}
       <footer className="floating-controls">
         <div className="control-cluster">
           <IconButton label="上一句" onClick={canControlPlayback ? () => onCommand("previousSentence") : undefined}><CaretLeft weight="fill" /></IconButton>
@@ -585,17 +624,26 @@ function NativeFloatingReader({ state, loading, error, pointerInside, onPointerI
           <span>背景 {Math.round(visibleOpacity * 100)}%</span>
           <input aria-label="悬浮窗背景透明度" type="range" min="0" max="100" step="5" value={Math.round(visibleOpacity * 100)} disabled={settingPending("backgroundOpacity")} onChange={(event) => changeBackgroundOpacity(event.target.value)} />
         </label>
-        <div className="floating-settings">
-          <button className={`language-toggle ${settings.bilingual ? "on" : ""}`} aria-label="显示双语" disabled={settingPending("bilingual")} onClick={() => onSettings({ bilingual: !settings.bilingual })}>中 / EN</button>
-        </div>
+        <button
+          className="floating-resize-control"
+          aria-label="拖动调整悬浮窗大小"
+          title="拖动调整悬浮窗大小"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            onResize("bottomRight");
+          }}
+        ><Resize weight="bold" /></button>
       </footer>
     </main>
   );
 }
 
 function FloatingApplication() {
+  const qaMode = new URLSearchParams(window.location.search).get("qa");
   const [floatingState, setFloatingState] = useState(null);
   const [error, setError] = useState("");
+  const [networkNotice, handlePlaybackEvent] = usePlaybackNetworkNotice(qaMode === "network" ? NETWORK_FALLBACK_NOTICE : null);
   const [pendingCommand, setPendingCommand] = useState("");
   const [pendingSettings, setPendingSettings] = useState([]);
   const [pointerInside, setPointerInside] = useState(false);
@@ -623,6 +671,9 @@ function FloatingApplication() {
         setFloatingState(event.state);
         setPendingCommand("");
         if (event.state.playback.status !== "error") setError("");
+      });
+      connection.onReaderPlaybackChanged((event) => {
+        if (active) handlePlaybackEvent(event);
       });
       connection.onFloatingPointerChanged((inside) => {
         if (active) setPointerInside(inside);
@@ -708,6 +759,7 @@ function FloatingApplication() {
         onPointerInsideChange={setPointerInside}
         loading={!floatingState}
         error={error}
+        networkNotice={networkNotice}
         pendingCommand={pendingCommand}
         pendingSetting={pendingSettings}
         onCommand={controlPlayback}
@@ -775,7 +827,7 @@ function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings
   );
 }
 
-function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNavigate, onSettings, settings }) {
+function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNavigate, onSettings, settings, networkNotice }) {
   const [seekPercent, setSeekPercent] = useState(playback.position.progressPercent);
   const seekingRef = useRef(false);
   useEffect(() => {
@@ -785,7 +837,7 @@ function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNav
   const disabled = Boolean(pendingCommand);
   return (
     <div className="player-bar">
-      <div className="player-copy"><strong>{chapterTitle}</strong><small>{playback.sentence ? `正在朗读：${playback.sentence.text}` : playback.status === "paused" ? "朗读已暂停" : "阅读进度已同步"}</small></div>
+      <div className="player-copy"><strong>{chapterTitle}</strong>{networkNotice ? <NetworkStatusHint notice={networkNotice} /> : <small>{playback.sentence ? `正在朗读：${playback.sentence.text}` : playback.status === "paused" ? "朗读已暂停" : "阅读进度已同步"}</small>}</div>
       <div className="player-controls"><IconButton label="上一句" onClick={disabled ? undefined : () => onCommand("previousSentence")}><CaretLeft weight="bold" /></IconButton><button className="play-button" aria-label={playing ? "暂停" : "播放"} disabled={disabled} onClick={() => onCommand(playing ? "pause" : "play")}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句" onClick={disabled ? undefined : () => onCommand("nextSentence")}><CaretRight weight="bold" /></IconButton></div>
       <div className="player-slider"><span>{seekPercent.toFixed(1)}%</span><input type="range" min="0" max="100" step="0.1" value={seekPercent} onPointerDown={() => { seekingRef.current = true; }} onChange={(event) => setSeekPercent(Number(event.target.value))} onPointerUp={(event) => { seekingRef.current = false; onNavigate({ kind: "percent", percent: Number(event.currentTarget.value) }); }} /><span>100%</span></div>
       <div className="player-tools"><button className="speed" onClick={() => onSettings({ ttsRate: settings.ttsRate >= 300 ? 120 : settings.ttsRate + 20 })}>{settings.ttsRate}</button><IconButton label={`音量 ${settings.volume}`} onClick={() => onSettings({ volume: settings.volume >= 100 ? 50 : Math.min(100, settings.volume + 10) })}><SpeakerHigh /></IconButton><IconButton label="停止朗读" onClick={disabled ? undefined : () => onCommand("stop")}><X /></IconButton></div>
@@ -793,7 +845,7 @@ function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNav
   );
 }
 
-function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings, floatingAvailable, floatingVisible, onFloatingToggle, onOpenSettings }) {
+function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, onUpdatePosition, onSearch, onLoadBookmarks, onAddBookmark, onRemoveBookmark, onCommand, onSettings, floatingAvailable, floatingVisible, onFloatingToggle, onOpenSettings }) {
   const [panelMode, setPanelMode] = useState("toc");
   const [query, setQuery] = useState("");
   const scrollTimerRef = useRef(null);
@@ -862,7 +914,7 @@ function NativeReader({ state, onBack, onNavigate, onGetWindow, onUpdatePosition
           <div className="page-count">{data.position.progressPercent.toFixed(1)}%</div>
         </article>
       </div>
-      <NativePlayer playback={playback} chapterTitle={chapterTitle} pendingCommand={state.pendingCommand} onCommand={onCommand} onNavigate={navigate} onSettings={onSettings} settings={data.settings} />
+      <NativePlayer playback={playback} chapterTitle={chapterTitle} pendingCommand={state.pendingCommand} onCommand={onCommand} onNavigate={navigate} onSettings={onSettings} settings={data.settings} networkNotice={networkNotice} />
     </section>
   );
 }
@@ -965,7 +1017,7 @@ function SettingsModal({ preferences, speech, floatingSettings, version, softwar
         </div>
         <p className="update-security-note">仅从本项目 GitHub Release 下载与版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
       </section>
-      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.2"} · Qt WebEngine 桌面版</p></section>
+      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.3"} · Qt WebEngine 桌面版</p></section>
     </div></div>
   );
 }
@@ -973,11 +1025,12 @@ function SettingsModal({ preferences, speech, floatingSettings, version, softwar
 function MainApplication() {
   const qaMode = new URLSearchParams(window.location.search).get("qa");
   const qaFloating = qaMode === "floating";
+  const qaNetwork = qaMode === "network";
   const qaEmptyLibrary = qaMode === "empty-library";
   const nativeTransportAvailable = Boolean(window.qt?.webChannelTransport);
   const demoQaFloating = qaFloating && !nativeTransportAvailable;
   const connectionRef = useRef(null);
-  const [page, setPage] = useState(demoQaFloating ? "reader" : "library");
+  const [page, setPage] = useState(demoQaFloating || qaNetwork ? "reader" : "library");
   const [books, setBooks] = useState([]);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [bridgeError, setBridgeError] = useState("");
@@ -990,15 +1043,15 @@ function MainApplication() {
   const [openAfterImportBookId, setOpenAfterImportBookId] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [floating, setFloating] = useState(demoQaFloating);
-  const [playing, setPlaying] = useState(demoQaFloating);
-  const [bilingual, setBilingual] = useState(false);
+  const [playing, setPlaying] = useState(demoQaFloating || qaNetwork);
   const [fontSize, setFontSize] = useState(21);
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.2");
+  const [appVersion, setAppVersion] = useState("2.0.3");
   const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [networkNotice, handlePlaybackEvent] = usePlaybackNetworkNotice(qaNetwork ? NETWORK_FALLBACK_NOTICE : null);
   const settingsPendingRef = useRef(new Set());
   const [settingsPending, setSettingsPending] = useState([]);
   const [readerState, dispatchReader] = useReducer(readerReducer, EMPTY_READER_STATE);
@@ -1142,11 +1195,12 @@ function MainApplication() {
       connected.onReaderPlaybackChanged(async (event) => {
         if (!active || event.sessionId !== readerSessionRef.current || event.sequence <= playbackSequenceRef.current) return;
         playbackSequenceRef.current = event.sequence;
+        handlePlaybackEvent(event);
         const current = readerDataRef.current;
         if (!current) return;
         readerDataRef.current = { ...current, position: event.playback.position, playback: event.playback };
         dispatchReader({ type: "PLAYBACK", playback: event.playback });
-        if (event.error) setBridgeError(event.error.message);
+        if (event.error && event.error.code !== "EDGE_OFFLINE_FALLBACK") setBridgeError(event.error.message);
         const sentence = event.playback.sentence;
         const currentWindow = readerDataRef.current.window;
         const outsideWindow = sentence && (
@@ -1197,7 +1251,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.2");
+      setAppVersion(error.initialData?.app?.version || "2.0.3");
       setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
@@ -1604,14 +1658,14 @@ function MainApplication() {
           <Rail page={page} setPage={navigatePage} readerEnabled={readerEnabled} audioEnabled={bridgeMode === "demo" || capabilities.audioImport} darkMode={appPreferences.colorScheme === "dark"} onToggleDark={toggleDarkMode} onOpenSettings={() => setSettingsOpen(true)} />
           <main className="content-area">
             {page === "reader" && bridgeMode === "demo"
-              ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} />
+              ? <DemoReader setPage={setPage} fontSize={fontSize} setFontSize={setFontSize} playing={playing} setPlaying={setPlaying} floating={floating} setFloating={setFloating} networkNotice={networkNotice} />
               : page === "reader" && bridgeMode === "native"
-                ? <NativeReader state={readerState} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} floatingAvailable={capabilities.floatingReader} floatingVisible={Boolean(nativeFloatingState?.visible)} onFloatingToggle={toggleFloatingReader} onOpenSettings={() => setSettingsOpen(true)} />
+                ? <NativeReader state={readerState} networkNotice={networkNotice} onBack={() => setPage("library")} onNavigate={navigateReader} onGetWindow={getReaderWindow} onUpdatePosition={updateReaderPosition} onSearch={searchReader} onLoadBookmarks={loadReaderBookmarks} onAddBookmark={addReaderBookmark} onRemoveBookmark={removeReaderBookmark} onCommand={controlReaderPlayback} onSettings={updateReaderSettings} floatingAvailable={capabilities.floatingReader} floatingVisible={Boolean(nativeFloatingState?.visible)} onFloatingToggle={toggleFloatingReader} onOpenSettings={() => setSettingsOpen(true)} />
                 : <Library books={books} error={bridgeError} loading={libraryLoading} openBook={openBook} openPaste={() => setPasteOpen(true)} selectFiles={selectFiles} showUnavailable={showUnavailable} capabilities={effectiveCapabilities} readerEnabled={readerEnabled} importState={importState} cancelImport={cancelImport} openAfterImportBookId={openAfterImportBookId} />}
           </main>
         </div>
       </div>
-      {floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} bilingual={bilingual} setBilingual={setBilingual} /> : null}
+      {floating && bridgeMode === "demo" ? <DemoFloatingReader playing={playing} setPlaying={setPlaying} onClose={() => setFloating(false)} /> : null}
       {pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}
       {importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}
       {settingsOpen && <SettingsModal preferences={appPreferences} speech={speechState} floatingSettings={nativeFloatingState?.settings || EMPTY_FLOATING_STATE.settings} version={appVersion} softwareUpdate={softwareUpdate} pending={settingsPending} onUpdateApp={updateAppPreferences} onUpdateSpeech={updateSpeechPreferences} onUpdateFloating={updateFloatingPreferences} onCheckUpdate={checkForUpdates} onDownloadUpdate={downloadUpdate} onSkipUpdate={skipUpdate} onInstallUpdate={installUpdate} onOpenUpdatePage={openUpdatePage} onClose={() => setSettingsOpen(false)} />}

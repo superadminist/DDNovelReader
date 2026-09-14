@@ -424,6 +424,7 @@ test("native reader events are parsed, bounded and disposed", async () => {
   env.nativeBridge.readerOpened.emit(JSON.stringify({ schemaVersion: SCHEMA_VERSION, requestId: "reader-request", bookId: "book-1", ok: true, data: readerFixture(), error: null }));
   env.nativeBridge.readerSearchFinished.emit(JSON.stringify({ schemaVersion: SCHEMA_VERSION, requestId: "search-request", sessionId: "reader-session", ok: true, data: { query: "真实", total: 1, nextCursor: "", results: [{ id: "result-1", chapterIndex: 0, chapterTitle: "第一章", startOffset: 0, endOffset: 2, excerptStartOffset: 0, excerpt: "真实正文" }] }, error: null }));
   env.nativeBridge.readerPlaybackChanged.emit(JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId: "reader-session", bookId: "book-1", sequence: 1, commandId: "command-1", reason: "sentenceStart", playback: { ...readerFixture().playback, status: "playing", activeBackend: "sapi", sentence: { chapterIndex: 0, startOffset: 0, endOffset: 2, text: "真实" } }, error: null }));
+  env.nativeBridge.readerPlaybackChanged.emit(JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId: "reader-session", bookId: "book-1", sequence: 2, commandId: "command-1", reason: "buffering", playback: { ...readerFixture().playback, status: "playing", activeBackend: "edge" }, error: null }));
   const oversized = readerFixture();
   oversized.window.blocks = Array.from({ length: 121 }, (_, index) => ({ id: `0:${index}:${index + 1}`, startOffset: index, endOffset: index + 1, text: "字", startsParagraph: true, endsParagraph: true }));
   env.nativeBridge.readerOpened.emit(JSON.stringify({ schemaVersion: SCHEMA_VERSION, requestId: "oversized", bookId: "book-1", ok: true, data: oversized, error: null }));
@@ -431,6 +432,7 @@ test("native reader events are parsed, bounded and disposed", async () => {
   assert.equal(opened.length, 1);
   assert.equal(searches[0].data.results[0].startOffset, 0);
   assert.equal(playback[0].playback.sentence.endOffset, 2);
+  assert.equal(playback[1].reason, "buffering");
   assert.equal(errors.at(-1).code, "BRIDGE_INVALID_PAYLOAD");
   connection.dispose();
   assert.equal(env.nativeBridge.readerOpened.size, 0);
@@ -695,4 +697,31 @@ test("main titlebar uses right-side Windows controls and no traffic lights", asy
   assert.match(css, /\.titlebar-actions \{[^}]*right: 150px;/s);
   assert.match(css, /\.window-controls \{[^}]*right: 0;/s);
   assert.match(css, /\.window-control\.close:hover \{[^}]*background: #c42b1c;/s);
+});
+
+test("network trouble uses one subtle animated status shared by main and floating readers", async () => {
+  const [source, css] = await Promise.all([
+    readFile(new URL("../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /function NetworkStatusHint/);
+  assert.match(source, /event\.reason === "buffering"/);
+  assert.match(source, /event\.error\?\.code === "EDGE_OFFLINE_FALLBACK"/);
+  assert.match(source, /<NativePlayer[\s\S]*networkNotice=\{networkNotice\}/);
+  assert.match(source, /<NativeFloatingReader[\s\S]*networkNotice=\{networkNotice\}/);
+  assert.match(css, /@keyframes network-status-ripple/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*network-status-icon/);
+});
+
+test("floating footer replaces bilingual control with a native bottom-right resize grip", async () => {
+  const [source, css] = await Promise.all([
+    readFile(new URL("../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.doesNotMatch(source, />中 \/ EN</);
+  assert.match(source, /className="floating-resize-control"[\s\S]*onResize\("bottomRight"\)/);
+  assert.match(source, /aria-label="拖动调整悬浮窗大小"/);
+  assert.match(css, /grid-template-columns: 126px minmax\(96px, 108px\) 36px;/);
+  assert.match(css, /\.floating-resize-control:hover/);
+  assert.match(css, /cursor: nwse-resize;/);
 });

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -12,7 +13,13 @@ from typing import Any
 from .paths import default_data_dir
 
 
-DEFAULT_COVER_URL = "covers/library.png"
+DEFAULT_COVER_URLS = (
+    "covers/library-indigo.jpg",
+    "covers/library-sage.jpg",
+    "covers/library-amber.jpg",
+    "covers/library-night.jpg",
+)
+DEFAULT_COVER_URL = DEFAULT_COVER_URLS[0]
 
 
 class LibraryDataError(Exception):
@@ -44,6 +51,12 @@ def _text(value: Any, default: str = "") -> str:
     if value is None:
         return default
     return str(value)
+
+
+def _default_cover_url(book_id: Any) -> str:
+    """Choose a stable cover without relying on Python's randomized hash()."""
+    digest = hashlib.blake2s(_text(book_id).encode("utf-8"), digest_size=1).digest()[0]
+    return DEFAULT_COVER_URLS[digest % len(DEFAULT_COVER_URLS)]
 
 
 class LibraryQueryService:
@@ -81,6 +94,7 @@ class LibraryQueryService:
 
     @staticmethod
     def _book_summary(book_id: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+        resolved_book_id = _text(metadata.get("id") or book_id)
         progress = metadata.get("progress")
         if not isinstance(progress, dict):
             progress = {}
@@ -103,7 +117,7 @@ class LibraryQueryService:
         total_chars = max(0, _integer(metadata.get("total_chars"), 0))
 
         return {
-            "id": _text(metadata.get("id") or book_id),
+            "id": resolved_book_id,
             "title": _text(metadata.get("title"), "未命名内容") or "未命名内容",
             "author": _text(metadata.get("author")),
             "format": _text(metadata.get("format")).lstrip(".").upper(),
@@ -113,5 +127,5 @@ class LibraryQueryService:
             "currentChapterTitle": current_chapter,
             "lastReadAt": last_read_at,
             "totalChars": total_chars,
-            "coverUrl": DEFAULT_COVER_URL,
+            "coverUrl": _default_cover_url(resolved_book_id),
         }

@@ -17,6 +17,7 @@ import os
 import json
 
 import asyncio
+from collections import OrderedDict
 import queue
 import re
 import tempfile
@@ -51,6 +52,13 @@ _SENT_END = re.compile(r"(?<=[。！？!?；;])")
 _NEXT_BOUNDARY = re.compile(r"[。！？!?；;\n]")
 
 _MAX_CHUNK = 160
+_EDGE_SYNTH_TIMEOUT_SECONDS = 30.0
+_EDGE_SYNTH_ATTEMPT_TIMEOUT_SECONDS = 20.0
+_EDGE_SYNTH_ATTEMPTS = 2
+_EDGE_RETRY_DELAY_SECONDS = 0.35
+_EDGE_BUFFERING_NOTICE_SECONDS = 1.5
+_EDGE_AUDIO_CACHE_ITEMS = 24
+_EDGE_AUDIO_CACHE_BYTES = 16 * 1024 * 1024
 
 # 免费优质中文 Edge 语音（音色自然，接近豆包级）
 EDGE_VOICES = [
@@ -106,7 +114,7 @@ def _sanitize_name(s):
     return re.sub(r"[^A-Za-z0-9_\-]", "_", str(s)) or "default"
 
 
-def synth_audio(text, voice, rate=200):
+def synth_audio(text, voice, rate=200, timeout=None):
     """用 Edge 神经语音把一句文本合成为 MP3 字节（独立事件循环，线程安全）。"""
     if edge_tts is None:
         raise RuntimeError("edge-tts 未安装")
@@ -121,7 +129,14 @@ def synth_audio(text, voice, rate=200):
 
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(_gen())
+        # edge-tts has per-socket timeouts, but one synthesis can otherwise
+        # remain silent for about a minute while the controller still reports
+        # ``playing``.  Keep a bounded whole-request deadline so a stalled
+        # network request reaches the existing one-time SAPI fallback.
+        request_timeout = (
+            _EDGE_SYNTH_TIMEOUT_SECONDS if timeout is None else max(0.01, float(timeout))
+        )
+        loop.run_until_complete(asyncio.wait_for(_gen(), timeout=request_timeout))
     finally:
         loop.close()
     return bytes(buf)
@@ -135,10 +150,10 @@ class _EdgePrefetch:
     exact reading order even when a later network request finishes first.
     """
 
-    MAX_AHEAD = 30
-    WORKERS = 3
+    MAX_AHEAD = 8
+    WORKERS = 2
 
-    def __init__(self, synth_fn, content, start_off, limit=MAX_AHEAD):
+    def __init__(self, synth_fn, content, start_off, limit=MAX_AHEAD, autostart=True):
         self._synth = synth_fn
         self._content = content
         self._limit = limit
@@ -152,7 +167,18 @@ class _EdgePrefetch:
             threading.Thread(target=self._run, daemon=True)
             for _ in range(min(self.WORKERS, limit))
         ]
-        for worker in self._workers:
+        self._started = False
+        if autostart:
+            self.start()
+
+    def start(self):
+        """Start workers once, allowing the current sentence to take priority."""
+        with self._lock:
+            if self._started or self._stopped.is_set():
+                return
+            self._started = True
+            workers = list(self._workers)
+        for worker in workers:
             worker.start()
 
     def _run(self):
@@ -640,6 +666,8 @@ class SpeechController:
         self._edge_prime_audio = None
         self._edge_prime_event = None
         self._edge_prime_prefetch = None
+        self._edge_audio_cache = OrderedDict()
+        self._edge_audio_cache_bytes = 0
         self._warm_sapi_requested = False
         self._tts_cache_dir = None
         self._book_id = "book"
@@ -821,20 +849,28 @@ class SpeechController:
                 content,
                 next_clean,
                 _EdgePrefetch.MAX_AHEAD,
+                autostart=False,
             )
-        cached = self._cached_audio(ci, original_offset)
+            prime_prefetch = self._edge_prime_prefetch
+        cached = self._memory_edge_audio(key) or self._cached_audio(ci, original_offset)
         if cached:
+            self._remember_edge_audio(key, cached)
             with self._cv:
                 if token == self._edge_prime_token and key == self._edge_prime_key:
                     self._edge_prime_audio = cached
                 ready.set()
+            prime_prefetch.start()
             return
-        threading.Thread(
+        prime_thread = threading.Thread(
             target=self._prime_edge_sentence,
             args=(token, key, text, ready),
             name="dd-edge-prime",
             daemon=True,
-        ).start()
+        )
+        # Give the sentence the user is waiting for the first connection slot,
+        # then fill the smaller lookahead window in the background.
+        prime_thread.start()
+        prime_prefetch.start()
 
     def _prime_edge_sentence(self, token, key, text, ready):
         try:
@@ -858,6 +894,32 @@ class SpeechController:
                 prefetch.close()
             except Exception:
                 pass
+
+    def _memory_edge_audio(self, key):
+        """Return one recently generated sentence and refresh its LRU position."""
+        with self._cv:
+            audio = self._edge_audio_cache.pop(key, None)
+            if audio:
+                self._edge_audio_cache[key] = audio
+            return audio
+
+    def _remember_edge_audio(self, key, audio):
+        """Keep recent audio for pause/restart without another network request."""
+        if not audio:
+            return
+        audio = bytes(audio)
+        with self._cv:
+            previous = self._edge_audio_cache.pop(key, None)
+            if previous:
+                self._edge_audio_cache_bytes -= len(previous)
+            self._edge_audio_cache[key] = audio
+            self._edge_audio_cache_bytes += len(audio)
+            while self._edge_audio_cache and (
+                len(self._edge_audio_cache) > _EDGE_AUDIO_CACHE_ITEMS
+                or self._edge_audio_cache_bytes > _EDGE_AUDIO_CACHE_BYTES
+            ):
+                _, removed = self._edge_audio_cache.popitem(last=False)
+                self._edge_audio_cache_bytes -= len(removed)
 
     def _edge_prime_result(self, ci, off, text, timeout=0.10):
         with self._cv:
@@ -1756,7 +1818,32 @@ class SpeechController:
         with self._cv:
             voice = self._edge_voice
             rate = self._rate
-        return synth_audio(text, voice, rate)
+        deadline = time.monotonic() + _EDGE_SYNTH_TIMEOUT_SECONDS
+        last_error = None
+        for attempt in range(_EDGE_SYNTH_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                audio = synth_audio(
+                    text,
+                    voice,
+                    rate,
+                    timeout=min(_EDGE_SYNTH_ATTEMPT_TIMEOUT_SECONDS, remaining),
+                )
+                if audio:
+                    return audio
+                last_error = RuntimeError("Edge 语音返回了空音频")
+            except Exception as exc:
+                last_error = exc
+            if attempt + 1 < _EDGE_SYNTH_ATTEMPTS:
+                remaining = deadline - time.monotonic()
+                if remaining <= _EDGE_RETRY_DELAY_SECONDS:
+                    break
+                time.sleep(_EDGE_RETRY_DELAY_SECONDS)
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError("Edge 语音生成超时")
 
     def _speak_edge(
         self,
@@ -1772,10 +1859,23 @@ class SpeechController:
         """Edge 语音：整本缓存命中直接播放；否则批量预取/按需合成；失败回退系统语音。"""
         if self._edge_session_fallback:
             return self._speak_sapi(text, gen, start_event)
+        wait_started = time.monotonic()
+        buffering_posted = False
+
+        def report_buffering_if_needed():
+            nonlocal buffering_posted
+            if (
+                not buffering_posted
+                and time.monotonic() - wait_started >= _EDGE_BUFFERING_NOTICE_SECONDS
+            ):
+                buffering_posted = True
+                self._post({"type": "buffering"}, gen)
+
         primed, prime_ready, audio, prime_prefetch = self._edge_prime_result(
             ci, off, text
         )
         while primed and not prime_ready and not self._should_stop(gen):
+            report_buffering_if_needed()
             primed, prime_ready, audio, prime_prefetch = self._edge_prime_result(
                 ci, off, text
             )
@@ -1783,9 +1883,18 @@ class SpeechController:
             return False
         if prime_prefetch is not None:
             self._edge_prefetch = prime_prefetch
+        cache_key = (
+            self._book_id,
+            self._edge_voice,
+            int(self._rate),
+            int(ci),
+            int(off),
+            text,
+        )
         if not primed:
-            audio = self._cached_audio(ci, off)
+            audio = self._memory_edge_audio(cache_key) or self._cached_audio(ci, off)
         if audio:
+            self._remember_edge_audio(cache_key, audio)
             if self._edge_prefetch is None:
                 self._edge_prefetch = _EdgePrefetch(
                     self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
@@ -1816,12 +1925,14 @@ class SpeechController:
                 )
                 if ready:
                     break
+                report_buffering_if_needed()
                 with self._cv:
                     if self._state == "paused":
                         self._cv.wait()
             if self._should_stop(gen):
                 return False
         if audio:
+            self._remember_edge_audio(cache_key, audio)
             return self._speak_edge_play(audio, gen, start_event)
         # A real synthesis failure keeps the existing fallback behavior, but
         # locks the remainder of this session to SAPI to prevent voice flapping.
