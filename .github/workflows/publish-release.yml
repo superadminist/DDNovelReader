@@ -67,5 +67,11 @@ jobs:
           INSTALLER_PATH: ${{ steps.assets.outputs.installer }}
           CHECKSUM_PATH: ${{ steps.assets.outputs.checksum }}
         run: |
-          gh release upload $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --clobber
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $env:RELEASE_TAG $env:INSTALLER_PATH $env:CHECKSUM_PATH --repo $env:GITHUB_REPOSITORY --verify-tag --generate-notes --title "QYReader $env:RELEASE_TAG"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub release creation or upload failed" }
           gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
