@@ -45,7 +45,7 @@ function demoReaderWindow(sessionId, bookId, anchorOffset = 0) {
 }
 
 const EMPTY_DATA = {
-  app: { version: "2.0.3" },
+  app: { version: "2.0.4" },
   library: { books: [], total: 0 },
   preferences: { theme: "护眼", colorScheme: "light", autoOpenLast: true, closeToTray: false, autoCheckUpdates: true, startupBookId: "" },
   window: { isMaximized: false, isFullScreen: false },
@@ -60,11 +60,13 @@ const EMPTY_DATA = {
   },
   softwareUpdate: {
     status: "idle",
-    currentVersion: "2.0.3",
+    currentVersion: "2.0.4",
     latestVersion: "",
     lastCheckedAt: "",
     message: "尚未检查更新。",
     releaseUrl: "https://github.com/superadminist/QYReader/releases",
+    publishedAt: "",
+    releaseNotes: "",
     progressPercent: 0,
     downloadedBytes: 0,
     totalBytes: 0,
@@ -99,7 +101,7 @@ const BOOK_FIELDS = {
 const DUPLICATE_MODES = new Set(["cancel", "overwrite", "reparse"]);
 const PLAYBACK_STATUSES = new Set(["idle", "playing", "paused", "finished", "error"]);
 const PLAYBACK_COMMANDS = new Set(["play", "pause", "stop", "previousSentence", "nextSentence"]);
-const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "buffering", "finished", "fallback", "error"]);
+const PLAYBACK_REASONS = new Set(["state", "sentenceStart", "sentenceDone", "buffering", "finished", "fallback", "recovered", "error"]);
 const FLOATING_BACKGROUNDS = new Set(["light", "sepia", "dark"]);
 const APP_THEMES = new Set(["白天", "护眼", "夜间", "米黄"]);
 const SOFTWARE_UPDATE_STATUSES = new Set(["idle", "checking", "upToDate", "available", "skipped", "downloading", "ready", "installing", "error"]);
@@ -165,6 +167,9 @@ function validSoftwareUpdateState(state) {
     && typeof state.lastCheckedAt === "string"
     && typeof state.message === "string"
     && typeof state.releaseUrl === "string"
+    && typeof state.publishedAt === "string"
+    && typeof state.releaseNotes === "string"
+    && state.releaseNotes.length <= 12_000
     && nonNegativeNumber(state.progressPercent)
     && state.progressPercent <= 100
     && nonNegativeNumber(state.downloadedBytes)

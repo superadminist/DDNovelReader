@@ -180,6 +180,68 @@ class PlaybackServiceTests(unittest.TestCase):
         self.service.drain_events()
         self.assertEqual(self.service.floating_context()["current"]["text"], "第二句！")
 
+    def test_pause_freezes_a_sentence_start_that_races_with_event_polling(self):
+        self.service.control("play", "play-1")
+        generation = self.speech.generation()
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 0,
+            "char_end": 4,
+            "text": "第一句。",
+        })
+        self.service.drain_events()
+
+        self.service.control("pause", "pause-1")
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 4,
+            "char_end": 8,
+            "text": "第二句！",
+        })
+        paused_events = self.service.drain_events()
+
+        self.assertEqual(paused_events[-1]["playback"]["status"], "paused")
+        self.assertEqual(self.service.snapshot()["sentence"]["text"], "第一句。")
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第一句。")
+
+        self.service.control("play", "resume-1")
+        resumed_events = self.service.drain_events()
+        self.assertEqual(
+            [event["reason"] for event in resumed_events],
+            ["sentenceStart", "state"],
+        )
+        self.assertEqual(self.service.snapshot()["sentence"]["text"], "第二句！")
+
+    def test_voice_or_rate_refresh_restarts_current_sentence_and_preserves_pause(self):
+        self.service.control("play", "play-1")
+        generation = self.speech.generation()
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 4,
+            "char_end": 8,
+            "text": "第二句！",
+        })
+        self.service.drain_events()
+
+        self.service.refresh_speech(restart_current=True)
+        self.assertEqual(self.speech.starts[-1], (0, 4))
+        self.assertEqual(self.service.snapshot()["status"], "playing")
+
+        self.service.control("pause", "pause-1")
+        self.service.drain_events()
+        self.service.refresh_speech(restart_current=True)
+        self.assertEqual(self.service.snapshot()["status"], "paused")
+        self.assertEqual(self.speech._state, "idle")
+        self.service.control("play", "resume-1")
+        self.assertEqual(self.speech.starts[-1], (0, 4))
+
     def test_stale_generation_is_discarded_after_restart(self):
         self.service.control("play", "play-1")
         old_generation = self.speech.generation()
@@ -246,6 +308,86 @@ class PlaybackServiceTests(unittest.TestCase):
         self.assertEqual(event["playback"]["requestedBackend"], "edge")
         self.assertEqual(event["playback"]["activeBackend"], "sapi")
         self.assertTrue(event["playback"]["fallbackActive"])
+
+    def test_edge_fallback_stays_visible_across_sentences_pause_and_resume(self):
+        self.speech._backend = "edge"
+        self.service.control("play", "play-edge")
+        generation = self.speech.generation()
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "error",
+            "generation": generation,
+            "code": "EDGE_OFFLINE_FALLBACK",
+            "message": "暂时使用系统语音",
+            "retryable": True,
+            "fallback_backend": "sapi",
+        })
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 4,
+            "char_end": 8,
+            "text": "第二句！",
+        })
+
+        sentence_event = self.service.drain_events()[0]
+        self.assertTrue(sentence_event["playback"]["fallbackActive"])
+        self.assertEqual(sentence_event["playback"]["activeBackend"], "sapi")
+
+        self.service.control("pause", "pause-edge")
+        self.service.drain_events()
+        self.service.control("play", "resume-edge")
+        resumed = self.service.drain_events()[-1]
+        self.assertTrue(resumed["playback"]["fallbackActive"])
+        self.assertEqual(resumed["playback"]["activeBackend"], "sapi")
+
+    def test_confirmed_edge_recovery_clears_fallback_state(self):
+        self.speech._backend = "edge"
+        self.service.control("play", "play-edge")
+        generation = self.speech.generation()
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "error",
+            "generation": generation,
+            "code": "EDGE_OFFLINE_FALLBACK",
+            "message": "暂时使用系统语音",
+            "retryable": True,
+            "fallback_backend": "sapi",
+        })
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "edge_recovered",
+            "generation": generation,
+            "backend": "edge",
+        })
+
+        event = self.service.drain_events()[0]
+
+        self.assertEqual(event["reason"], "recovered")
+        self.assertFalse(event["playback"]["fallbackActive"])
+        self.assertEqual(event["playback"]["activeBackend"], "edge")
+
+    def test_explicit_speech_refresh_starts_a_fresh_backend_attempt(self):
+        self.speech._backend = "edge"
+        self.service.control("play", "play-edge")
+        generation = self.speech.generation()
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "error",
+            "generation": generation,
+            "code": "EDGE_OFFLINE_FALLBACK",
+            "message": "暂时使用系统语音",
+            "retryable": True,
+            "fallback_backend": "sapi",
+        })
+        self.service.drain_events()
+
+        snapshot = self.service.refresh_speech(restart_current=True)
+
+        self.assertFalse(snapshot["fallbackActive"])
+        self.assertEqual(snapshot["activeBackend"], "edge")
 
     def test_fatal_error_is_not_overwritten_by_following_stopped(self):
         self.service.control("play", "play-fatal")
@@ -327,6 +469,41 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertGreater(starts[0]["char_end"], starts[0]["char_offset"])
         self.assertEqual(starts[0]["char_end"], done[0]["char_offset"])
 
+    def test_pause_during_edge_fallback_replays_the_same_sapi_sentence(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        first_started = threading.Event()
+        replay_started = threading.Event()
+        calls = []
+
+        def speak_edge(text, generation, *args, **kwargs):
+            controller._active_sentence_backend = "sapi"
+            calls.append(text)
+            if len(calls) == 1:
+                first_started.set()
+                deadline = time.time() + 1
+                while time.time() < deadline and not controller.is_paused():
+                    time.sleep(0.005)
+            elif len(calls) == 2:
+                replay_started.set()
+            return True
+
+        controller._speak_edge = speak_edge
+        book = make_book("第一句。第二句！", "")
+        try:
+            controller.start(book, 0, 0)
+            self.assertTrue(first_started.wait(0.5))
+            self.assertTrue(controller.pause())
+            time.sleep(0.05)
+            self.assertEqual(calls, ["第一句。"])
+            self.assertTrue(controller.resume())
+            self.assertTrue(replay_started.wait(0.5))
+        finally:
+            controller.stop()
+            controller.shutdown()
+
+        self.assertEqual(calls[:2], ["第一句。", "第一句。"])
+
     def test_edge_failure_is_structured_and_falls_back(self):
         controller = SpeechController()
         controller.set_voice("zh-CN-XiaoxiaoNeural")
@@ -348,6 +525,45 @@ class SpeechControllerContractTests(unittest.TestCase):
         self.assertEqual(errors[0]["code"], "EDGE_OFFLINE_FALLBACK")
         self.assertTrue(errors[0]["retryable"])
         self.assertEqual(errors[0]["fallback_backend"], "sapi")
+
+    def test_edge_recovery_probe_switches_back_only_on_a_sentence_boundary(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        controller._book = make_book()
+        controller._state = "playing"
+        controller._gen = 23
+        controller._edge_session_fallback = True
+        controller._edge_recovery_due_at = 0.0
+        controller._edge_synthesize = lambda text: b"online"
+        controller._speak_sapi = lambda text, generation, start_event=None: True
+        controller._speak_edge_play = lambda audio, generation, start_event=None: audio == b"online"
+        with controller._cv:
+            controller._schedule_edge_recovery_locked()
+            controller._edge_recovery_due_at = 0.0
+
+        with mock.patch("novelreader.tts_engine.time.monotonic", return_value=1.0):
+            controller._edge_recovery_due_at = 1.0
+            self.assertTrue(
+                controller._speak_edge("第二句！", 23, 0, 4, 4, "", 8)
+            )
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            ready = controller._edge_recovery_event
+            if ready is not None and ready.is_set():
+                break
+            time.sleep(0.01)
+
+        self.assertTrue(controller._edge_session_fallback)
+        self.assertTrue(
+            controller._speak_edge("第三句？", 23, 0, 8, 8, "", 12)
+        )
+        events = controller.drain()
+
+        self.assertFalse(controller._edge_session_fallback)
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["edge_recovered"],
+        )
 
     def test_edge_synthesis_has_a_bounded_whole_request_timeout(self):
         class HangingCommunicate:

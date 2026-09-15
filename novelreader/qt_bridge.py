@@ -578,10 +578,8 @@ class DesktopBridge(QObject):
         try:
             data = self._reader.update_settings(request.get("sessionId"), request.get("patch"))
             self._apply_speech_settings(data)
-            prepare_current = getattr(self._playback, "prepare_current", None)
-            if callable(prepare_current):
-                prepare_current()
             patch = request.get("patch")
+            self._refresh_playback_for_speech_patch(patch)
             if isinstance(patch, dict) and "fontSize" in patch:
                 floating = self._floating.state()["settings"]
                 if floating.get("followReaderFont"):
@@ -612,9 +610,7 @@ class DesktopBridge(QObject):
         try:
             settings = self._reader.update_global_settings(patch)
             self._apply_speech_settings(settings)
-            prepare_current = getattr(self._playback, "prepare_current", None)
-            if callable(prepare_current):
-                prepare_current()
+            self._refresh_playback_for_speech_patch(patch)
             state = self._speech_state(settings)
             self.speechPreferencesChanged.emit(_json({
                 "schemaVersion": SCHEMA_VERSION,
@@ -963,6 +959,8 @@ class DesktopBridge(QObject):
             "lastCheckedAt": checked_at,
             "message": message,
             "releaseUrl": release.release_url if release else RELEASES_URL,
+            "publishedAt": release.published_at if release else "",
+            "releaseNotes": release.release_notes if release else "",
             "progressPercent": progress,
             "downloadedBytes": max(0, int(downloaded_bytes)),
             "totalBytes": max(0, int(total_bytes)),
@@ -1336,11 +1334,20 @@ class DesktopBridge(QObject):
     def _apply_speech_settings(self, settings: dict[str, Any]) -> None:
         speech = self._playback.speech_controller
         voice_id = settings.get("ttsVoiceId")
-        if voice_id:
-            speech.set_voice(voice_id)
+        speech.set_voice(str(voice_id or ""))
         speech.set_rate(settings.get("ttsRate", 200))
         speech.set_sentence_gap(settings.get("sentenceGapSeconds", 0.1))
         speech.set_volume(settings.get("volume", 100))
+
+    def _refresh_playback_for_speech_patch(self, patch: object) -> None:
+        patch = patch if isinstance(patch, dict) else {}
+        refresh = getattr(self._playback, "refresh_speech", None)
+        if callable(refresh):
+            refresh(bool({"ttsVoiceId", "ttsRate"} & set(patch)))
+            return
+        prepare_current = getattr(self._playback, "prepare_current", None)
+        if callable(prepare_current):
+            prepare_current()
 
     def _speech_state(self, settings: dict[str, Any] | None = None) -> dict[str, Any]:
         if settings is None:

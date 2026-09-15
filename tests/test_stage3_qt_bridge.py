@@ -344,6 +344,11 @@ class Stage3QtBridgeTests(unittest.TestCase):
         self.assertEqual(self.playback.speech_controller.values["voice"], "zh-CN-YunxiNeural")
         self.assertEqual(self.playback.speech_controller.values["gap"], 0.25)
 
+        self._data(self.bridge.updateSpeechPreferences(json.dumps({
+            "patch": {"ttsVoiceId": ""}
+        })))
+        self.assertEqual(self.playback.speech_controller.values["voice"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

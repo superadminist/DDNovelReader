@@ -42,6 +42,7 @@ class PlaybackService:
         self._command_id = ""
         self._terminal_generation = None
         self._pending_events = deque()
+        self._deferred_sentence_start = None
         self._sentence_cache = {}
         self._closed = False
 
@@ -81,6 +82,7 @@ class PlaybackService:
             self._command_id = ""
             self._terminal_generation = None
             self._pending_events.clear()
+            self._deferred_sentence_start = None
             self._speech.set_book_id(self._book_id)
             self._prepare_position()
             return self.snapshot()
@@ -99,6 +101,7 @@ class PlaybackService:
                 self._generation = self._speech.start(
                     self._book, self._chapter_index, self._char_offset
                 )
+                self._fallback_active = False
                 self._active_backend = self._speech.backend()
                 self._terminal_generation = None
                 self._queue_event("state")
@@ -124,6 +127,10 @@ class PlaybackService:
             self._ensure_bound()
             if session_id is not None and str(session_id) != self._session_id:
                 raise RuntimeError("reader session is not bound")
+            # Preserve the real event order around a UI command.  Without this
+            # flush, a queued audio-start could be emitted after the later
+            # pause-state event and make the floating lyric jump on one click.
+            self._flush_speech_events()
             self._command_id = command_id
             if command == "play":
                 accepted = self._play()
@@ -209,14 +216,43 @@ class PlaybackService:
         """唯一底层 drain 入口，返回冻结的 ReaderPlaybackEvent 快照。"""
         with self._lock:
             self._ensure_open()
+            self._flush_speech_events()
             output = list(self._pending_events)
             self._pending_events.clear()
-            raw_events = self._speech.drain()
-            for raw in raw_events:
-                event = self._consume_raw_event(raw)
-                if event is not None:
-                    output.append(event)
             return output
+
+    def refresh_speech(self, restart_current=False):
+        """Apply speech changes to the one active session without a second controller."""
+        with self._lock:
+            if self._book is None:
+                return self.snapshot()
+            if not restart_current or self._status not in {"playing", "paused"}:
+                self._prepare_position()
+                return self.snapshot()
+            chapter_index = self._chapter_index
+            char_offset = self._char_offset
+            if self._sentence is not None:
+                chapter_index = int(self._sentence.get("chapterIndex", chapter_index))
+                char_offset = int(self._sentence.get("startOffset", char_offset))
+            self._chapter_index, self._char_offset = self._clamp_position(
+                chapter_index, char_offset
+            )
+            self._deferred_sentence_start = None
+            self._terminal_generation = None
+            if self._status == "playing":
+                self._generation = self._speech.start(
+                    self._book, self._chapter_index, self._char_offset
+                )
+                self._fallback_active = False
+                self._active_backend = self._speech.backend()
+            else:
+                # A logically paused session must stay paused.  Stop the old
+                # audio generation so the next Play starts this sentence with
+                # the newly selected voice/rate.
+                self._generation = self._speech.stop()
+                self._active_backend = None
+            self._queue_event("state")
+            return self.snapshot()
 
     def shutdown(self, timeout=2.0):
         """停止唯一控制器；等待有上限，返回工作线程是否已退出。"""
@@ -233,16 +269,25 @@ class PlaybackService:
     def _play(self):
         if self._status == "playing":
             return False
+        resumed = False
         if self._status == "paused" and self._speech.resume():
             self._status = "playing"
+            resumed = True
         else:
             self._generation = self._speech.start(
                 self._book, self._chapter_index, self._char_offset
             )
             self._status = "playing"
         self._terminal_generation = None
-        self._fallback_active = False
-        self._active_backend = self._speech.backend()
+        if not resumed:
+            self._fallback_active = False
+            self._active_backend = self._speech.backend()
+        if self._deferred_sentence_start is not None:
+            deferred = self._deferred_sentence_start
+            self._deferred_sentence_start = None
+            event = self._consume_raw_event(deferred)
+            if event is not None:
+                self._pending_events.append(event)
         self._queue_event("state")
         return True
 
@@ -267,6 +312,7 @@ class PlaybackService:
         self._sentence = None
         self._fallback_active = False
         self._active_backend = None
+        self._deferred_sentence_start = None
         self._queue_event("state")
         return True
 
@@ -299,6 +345,12 @@ class PlaybackService:
             return None
         event_type = raw.get("type")
         if event_type == "sentence_start":
+            if self._status == "paused":
+                # A start event can race with the 25 ms Qt polling boundary.
+                # Freeze the visible lyric while paused and publish it only
+                # when playback resumes.
+                self._deferred_sentence_start = dict(raw)
+                return None
             chapter_index = int(raw["chapter_idx"])
             start = int(raw["char_offset"])
             end = int(raw["char_end"])
@@ -312,8 +364,8 @@ class PlaybackService:
                 "text": str(raw.get("text", "")),
             }
             self._status = "playing" if self._speech.is_playing() else self._status
-            self._fallback_active = False
-            self._active_backend = self._speech.backend()
+            if not self._fallback_active:
+                self._active_backend = self._speech.backend()
             return self._event("sentenceStart")
         if event_type == "sentence_done":
             self._chapter_index, self._char_offset = self._clamp_position(
@@ -322,6 +374,10 @@ class PlaybackService:
             return self._event("sentenceDone")
         if event_type == "buffering":
             return self._event("buffering")
+        if event_type == "edge_recovered":
+            self._fallback_active = False
+            self._active_backend = str(raw.get("backend") or "edge")
+            return self._event("recovered")
         if event_type == "chapter":
             chapter_index = int(raw.get("chapter_idx", 0))
             if 0 <= chapter_index < len(self._book.chapters):
@@ -363,6 +419,12 @@ class PlaybackService:
             self._active_backend = None
             return self._event("state")
         return None
+
+    def _flush_speech_events(self):
+        for raw in self._speech.drain():
+            event = self._consume_raw_event(raw)
+            if event is not None:
+                self._pending_events.append(event)
 
     def _queue_event(self, reason, error=None):
         self._pending_events.append(self._event(reason, error))

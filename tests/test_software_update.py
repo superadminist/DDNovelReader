@@ -26,6 +26,7 @@ def release_payload(version: str, installer: bytes, *, checksum_hash: str | None
         "tag_name": tag,
         "html_url": f"https://github.com/superadminist/QYReader/releases/tag/{tag}",
         "published_at": "2026-09-14T09:00:00Z",
+        "body": "## 本次优化\n\n- 修复悬浮窗暂停错句\n- 设置立即生效",
         "assets": [
             {"name": name, "browser_download_url": f"{base}/{name}", "size": len(installer)},
             {"name": "SHA256SUMS.txt", "browser_download_url": f"{base}/SHA256SUMS.txt", "size": 96},
@@ -66,6 +67,7 @@ class SoftwareUpdateServiceTests(unittest.TestCase):
             path = service.download(release, lambda done, total: progress.append((done, total)))
 
             self.assertEqual(release.version, "2.0.2")
+            self.assertIn("修复悬浮窗暂停错句", release.release_notes)
             self.assertEqual(path.read_bytes(), installer)
             self.assertEqual(progress[-1], (len(installer), len(installer)))
             self.assertEqual(requested[0][0], LATEST_RELEASE_API)
@@ -95,6 +97,14 @@ class SoftwareUpdateServiceTests(unittest.TestCase):
         with self.assertRaises(SoftwareUpdateError) as raised:
             service.check_latest()
         self.assertEqual(raised.exception.code, "UPDATE_ASSET_MISSING")
+
+    def test_release_notes_are_plain_text_and_bounded(self):
+        value = "更新内容\x00\r\n" + ("优化" * 7_000)
+        notes = SoftwareUpdateService._release_notes(value)
+        self.assertNotIn("\x00", notes)
+        self.assertIn("更新内容\n", notes)
+        self.assertLessEqual(len(notes), 12_000)
+        self.assertTrue(notes.endswith("…"))
 
     def test_checksum_mismatch_discards_partial_installer(self):
         installer = b"corrupted-installer"

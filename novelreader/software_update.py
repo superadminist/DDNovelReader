@@ -46,6 +46,7 @@ class ReleaseInfo:
     installer_url: str
     installer_size: int
     checksum_url: str
+    release_notes: str = ""
 
     @property
     def is_newer(self) -> bool:
@@ -142,6 +143,7 @@ class SoftwareUpdateService:
             installer_url=installer_url,
             installer_size=installer_size,
             checksum_url=checksum_url,
+            release_notes=self._release_notes(payload.get("body")),
         )
         if is_newer_version(info.version, self.current_version):
             if not self._trusted_asset_url(info.installer_url, info.tag, info.installer_name):
@@ -225,6 +227,20 @@ class SoftwareUpdateService:
         if len(data) > limit:
             raise SoftwareUpdateError("UPDATE_RESPONSE_TOO_LARGE", "更新服务器返回的数据异常。")
         return data
+
+    @staticmethod
+    def _release_notes(value: object) -> str:
+        """Keep release notes readable and bounded before sending them to WebEngine."""
+        if not isinstance(value, str):
+            return ""
+        cleaned = "".join(
+            character
+            for character in value.replace("\r\n", "\n").replace("\r", "\n")
+            if character in {"\n", "\t"} or ord(character) >= 32
+        ).strip()
+        if len(cleaned) <= 12_000:
+            return cleaned
+        return cleaned[:11_999].rstrip() + "…"
 
     def _asset_request(self, url: str) -> urllib.request.Request:
         return urllib.request.Request(url, headers={"User-Agent": f"QYReader/{self.current_version}"})

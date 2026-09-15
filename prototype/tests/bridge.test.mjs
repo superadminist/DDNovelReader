@@ -631,12 +631,28 @@ test("settings modal avoids the Qt WebEngine full-window backdrop filter flicker
     readFile(new URL("../src/App.jsx", import.meta.url), "utf8"),
   ]);
   const modalBackdrop = css.match(/\.modal-backdrop \{([^}]*)\}/)?.[1] || "";
+  const settingsModal = css.match(/\.settings-modal \{([^}]*)\}/)?.[1] || "";
+  const settingsScroll = css.match(/\.settings-scroll \{([^}]*)\}/)?.[1] || "";
   assert.doesNotMatch(modalBackdrop, /backdrop-filter/);
+  assert.match(settingsModal, /border-radius: 24px/);
+  assert.match(settingsModal, /overflow: hidden/);
+  assert.match(settingsScroll, /overflow-y: auto/);
+  assert.match(app, /\["general", "常规"\]/);
+  assert.match(app, /\["reading", "朗读与悬浮"\]/);
+  assert.match(app, /\["updates", "更新与关于"\]/);
   assert.match(app, /preferences\.closeToTray/);
   assert.match(app, /点击关闭按钮时最小化到系统托盘/);
   assert.match(app, /preferences\.autoCheckUpdates/);
   assert.match(app, /启动时自动检查正式版更新/);
   assert.match(app, /SHA256/);
+  assert.match(app, /function UpdateAvailableModal/);
+  assert.match(app, /本次更新内容/);
+});
+
+test("software update state carries bounded user-readable release notes", () => {
+  const state = createDemoInitialState().data.softwareUpdate;
+  assert.equal(typeof state.releaseNotes, "string");
+  assert.equal(typeof state.publishedAt, "string");
 });
 
 test("native window surfaces keep anti-aliased corner pixels inside the viewport", async () => {
@@ -666,7 +682,7 @@ test("floating reader keeps chrome tied to pointer while the switch only control
   assert.match(app, /root\.dataset\.contextMode = "all";\s*if \(hoverDisplayEnabled && !pointerInside\)/);
   assert.match(app, /data-pointer-inside=\{pointerInside \? "true" : "false"\}/);
   assert.match(app, /data-hover-display-enabled=\{hoverDisplayEnabled \? "true" : "false"\}/);
-  assert.match(app, /鼠标移开时显示上一段和下一段（悬停时始终只显示标题、当前段和播放控制）/);
+  assert.match(app, /鼠标移开时显示上一段和下一段/);
   assert.doesNotMatch(css, /\.native-floating-surface:hover/);
   assert.match(host, /def enterEvent\(self, event\)[\s\S]*floatingPointerChanged\.emit\(True\)/);
   assert.match(host, /def leaveEvent\(self, event\)[\s\S]*floatingPointerChanged\.emit\(False\)/);
@@ -707,6 +723,10 @@ test("network trouble uses one subtle animated status shared by main and floatin
   assert.match(source, /function NetworkStatusHint/);
   assert.match(source, /event\.reason === "buffering"/);
   assert.match(source, /event\.error\?\.code === "EDGE_OFFLINE_FALLBACK"/);
+  assert.match(source, /event\.reason === "recovered"/);
+  assert.match(source, /网络异常，正在使用系统语音；恢复后会自动切回所选音色/);
+  assert.doesNotMatch(source, /setTimeout\(\(\) => setNotice\(null\), 6000\)/);
+  assert.match(source, /playback\.fallbackActive \? NETWORK_FALLBACK_NOTICE/);
   assert.match(source, /<NativePlayer[\s\S]*networkNotice=\{networkNotice\}/);
   assert.match(source, /<NativeFloatingReader[\s\S]*networkNotice=\{networkNotice\}/);
   assert.match(css, /@keyframes network-status-ripple/);

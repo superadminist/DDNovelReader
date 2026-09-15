@@ -56,6 +56,8 @@ export interface SoftwareUpdateState {
   lastCheckedAt: string;
   message: string;
   releaseUrl: string;
+  publishedAt: string;
+  releaseNotes: string;
   progressPercent: number;
   downloadedBytes: number;
   totalBytes: number;

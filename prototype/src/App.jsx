@@ -58,11 +58,13 @@ const DEFAULT_APP_PREFERENCES = {
 
 const DEFAULT_SOFTWARE_UPDATE = {
   status: "idle",
-  currentVersion: "2.0.3",
+  currentVersion: "2.0.4",
   latestVersion: "",
   lastCheckedAt: "",
   message: "尚未检查更新。",
   releaseUrl: "https://github.com/superadminist/QYReader/releases",
+  publishedAt: "",
+  releaseNotes: "",
   progressPercent: 0,
   downloadedBytes: 0,
   totalBytes: 0,
@@ -125,7 +127,11 @@ const NETWORK_WAIT_NOTICE = {
 };
 const NETWORK_FALLBACK_NOTICE = {
   kind: "fallback",
-  message: "网络波动，已切换系统语音",
+  message: "网络异常，正在使用系统语音；恢复后会自动切回所选音色",
+};
+const NETWORK_RECOVERED_NOTICE = {
+  kind: "recovered",
+  message: "网络已恢复，已切回所选音色",
 };
 
 function usePlaybackNetworkNotice(initialNotice = null) {
@@ -140,12 +146,23 @@ function usePlaybackNetworkNotice(initialNotice = null) {
     if (event.reason === "fallback" && event.error?.code === "EDGE_OFFLINE_FALLBACK") {
       window.clearTimeout(hideTimerRef.current);
       setNotice(NETWORK_FALLBACK_NOTICE);
-      hideTimerRef.current = window.setTimeout(() => setNotice(null), 6000);
+      return;
+    }
+    if (event.reason === "recovered") {
+      window.clearTimeout(hideTimerRef.current);
+      setNotice(NETWORK_RECOVERED_NOTICE);
+      hideTimerRef.current = window.setTimeout(() => setNotice(null), 4000);
       return;
     }
     if (event.reason === "sentenceStart") {
       setNotice((current) => current?.kind === "waiting" ? null : current);
-    } else if (["finished", "error", "state"].includes(event.reason)) {
+    } else if (event.reason === "state") {
+      if (event.playback?.fallbackActive) {
+        setNotice((current) => current?.kind === "recovered" ? current : NETWORK_FALLBACK_NOTICE);
+      } else {
+        setNotice((current) => ["fallback", "waiting"].includes(current?.kind) ? null : current);
+      }
+    } else if (["finished", "error"].includes(event.reason)) {
       window.clearTimeout(hideTimerRef.current);
       setNotice(null);
     }
@@ -483,6 +500,7 @@ function NativeFloatingReader({ state, loading, error, networkNotice, pointerIns
   const [lyricDirection, setLyricDirection] = useState("");
   const hoverDisplayEnabled = settings.hoverDisplayEnabled !== false;
   const interactionVisible = pointerInside;
+  const effectiveNetworkNotice = networkNotice || (playback.fallbackActive ? NETWORK_FALLBACK_NOTICE : null);
 
   useEffect(() => {
     fontSizeRef.current = settings.fontSize;
@@ -613,7 +631,7 @@ function NativeFloatingReader({ state, loading, error, networkNotice, pointerIns
         <FloatingLyricLayer context={renderedContext} className={lyricDirection ? `active enter-${lyricDirection}` : "active"} />
         {departingLyric ? <FloatingLyricLayer context={departingLyric.context} className={`departing exit-${departingLyric.direction}`} hidden /> : null}
       </section>
-      {error ? <div className="floating-error" role="alert">{error}</div> : networkNotice ? <div className="floating-network-slot"><NetworkStatusHint notice={networkNotice} compact /></div> : null}
+      {error ? <div className="floating-error" role="alert">{error}</div> : effectiveNetworkNotice ? <div className="floating-network-slot"><NetworkStatusHint notice={effectiveNetworkNotice} compact /></div> : null}
       <footer className="floating-controls">
         <div className="control-cluster">
           <IconButton label="上一句" onClick={canControlPlayback ? () => onCommand("previousSentence") : undefined}><CaretLeft weight="fill" /></IconButton>
@@ -835,9 +853,10 @@ function NativePlayer({ playback, chapterTitle, pendingCommand, onCommand, onNav
   }, [playback.position.progressPercent]);
   const playing = playback.status === "playing";
   const disabled = Boolean(pendingCommand);
+  const effectiveNetworkNotice = networkNotice || (playback.fallbackActive ? NETWORK_FALLBACK_NOTICE : null);
   return (
     <div className="player-bar">
-      <div className="player-copy"><strong>{chapterTitle}</strong>{networkNotice ? <NetworkStatusHint notice={networkNotice} /> : <small>{playback.sentence ? `正在朗读：${playback.sentence.text}` : playback.status === "paused" ? "朗读已暂停" : "阅读进度已同步"}</small>}</div>
+      <div className="player-copy"><strong>{chapterTitle}</strong>{effectiveNetworkNotice ? <NetworkStatusHint notice={effectiveNetworkNotice} /> : <small>{playback.sentence ? `正在朗读：${playback.sentence.text}` : playback.status === "paused" ? "朗读已暂停" : "阅读进度已同步"}</small>}</div>
       <div className="player-controls"><IconButton label="上一句" onClick={disabled ? undefined : () => onCommand("previousSentence")}><CaretLeft weight="bold" /></IconButton><button className="play-button" aria-label={playing ? "暂停" : "播放"} disabled={disabled} onClick={() => onCommand(playing ? "pause" : "play")}>{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button><IconButton label="下一句" onClick={disabled ? undefined : () => onCommand("nextSentence")}><CaretRight weight="bold" /></IconButton></div>
       <div className="player-slider"><span>{seekPercent.toFixed(1)}%</span><input type="range" min="0" max="100" step="0.1" value={seekPercent} onPointerDown={() => { seekingRef.current = true; }} onChange={(event) => setSeekPercent(Number(event.target.value))} onPointerUp={(event) => { seekingRef.current = false; onNavigate({ kind: "percent", percent: Number(event.currentTarget.value) }); }} /><span>100%</span></div>
       <div className="player-tools"><button className="speed" onClick={() => onSettings({ ttsRate: settings.ttsRate >= 300 ? 120 : settings.ttsRate + 20 })}>{settings.ttsRate}</button><IconButton label={`音量 ${settings.volume}`} onClick={() => onSettings({ volume: settings.volume >= 100 ? 50 : Math.min(100, settings.volume + 10) })}><SpeakerHigh /></IconButton><IconButton label="停止朗读" onClick={disabled ? undefined : () => onCommand("stop")}><X /></IconButton></div>
@@ -970,54 +989,89 @@ function formatUpdateTime(value) {
 }
 
 function SettingsModal({ preferences, speech, floatingSettings, version, softwareUpdate, pending, onUpdateApp, onUpdateSpeech, onUpdateFloating, onCheckUpdate, onDownloadUpdate, onSkipUpdate, onInstallUpdate, onOpenUpdatePage, onClose }) {
+  const [activeTab, setActiveTab] = useState("general");
   const themes = ["白天", "护眼", "米黄", "夜间"];
   const edgeVoices = speech.voices.filter((voice) => voice.backend === "edge");
   const localVoices = speech.voices.filter((voice) => voice.backend === "sapi");
   const customTextColor = floatingSettings.textColor !== "auto";
   const isPending = (scope, key) => pending.includes(`${scope}.${key}`);
   const pickerColor = floatingPickerColor(floatingSettings);
+  const tabs = [
+    ["general", "常规"],
+    ["reading", "朗读与悬浮"],
+    ["updates", "更新与关于"],
+  ];
   return (
     <div className="modal-backdrop"><div className="paste-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div className="modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>外观、朗读、更新与本地数据</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
-      <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={isPending("app", "theme")} onClick={() => onUpdateApp({ theme })}>{theme}</button>)}</div></section>
-      <section className="settings-section speech-settings"><h3>朗读设置</h3>
-        <label className="settings-field"><span>朗读音色</span><select value={speech.settings.ttsVoiceId} disabled={isPending("speech", "ttsVoiceId")} onChange={(event) => onUpdateSpeech({ ttsVoiceId: event.target.value })}>
-          <optgroup label="Edge 神经音色（需联网）">{edgeVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}</optgroup>
-          <optgroup label="本地系统音色（离线）">{localVoices.map((voice) => <option key={voice.id || "system-default"} value={voice.id}>{voice.label}</option>)}</optgroup>
-        </select></label>
-        {speech.loadingLocalVoices ? <p className="settings-hint">正在读取 Windows 本地音色…</p> : null}
-        {speech.localVoiceError ? <p className="settings-hint warning">{speech.localVoiceError}</p> : null}
-        <SettingsRange label="语速" min={80} max={400} step={10} value={speech.settings.ttsRate} disabled={isPending("speech", "ttsRate")} formatValue={(value) => `${(value / 200).toFixed(2)}×`} onCommit={(ttsRate) => onUpdateSpeech({ ttsRate })} />
-        <SettingsRange label="句间停顿" min={0} max={1} step={0.05} value={speech.settings.sentenceGapSeconds} disabled={isPending("speech", "sentenceGapSeconds")} formatValue={(value) => `${Number(value).toFixed(2)} 秒`} onCommit={(sentenceGapSeconds) => onUpdateSpeech({ sentenceGapSeconds })} />
-      </section>
-      <section className="settings-section floating-settings-section"><h3>悬浮朗读</h3>
-        <div className="settings-field"><span>悬浮窗背景</span><div className="theme-options compact">{[["light", "浅色"], ["sepia", "米黄"], ["dark", "深色"]].map(([value, label]) => <button key={value} className={floatingSettings.background === value ? "selected" : ""} disabled={isPending("floating", "background")} onClick={() => onUpdateFloating({ background: value })}>{label}</button>)}</div></div>
-        <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.hoverDisplayEnabled} disabled={isPending("floating", "hoverDisplayEnabled")} onChange={(event) => onUpdateFloating({ hoverDisplayEnabled: event.target.checked })} />鼠标移开时显示上一段和下一段（悬停时始终只显示标题、当前段和播放控制）</label>
-        <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.followReaderFont} disabled={isPending("floating", "followReaderFont")} onChange={(event) => onUpdateFloating({ followReaderFont: event.target.checked })} />跟随主阅读器字号（在悬浮正文中滚动滚轮会自动关闭）</label>
-        <div className="settings-field color-setting"><span>朗读字体颜色</span><div><input aria-label="悬浮窗朗读字体颜色" title="选择颜色后立即切换为自定义配色" type="color" value={pickerColor} onChange={(event) => { const patch = floatingTextColorPatch(event.target.value); if (patch) onUpdateFloating(patch); }} /><button className={!customTextColor ? "selected" : ""} onClick={() => onUpdateFloating({ textColor: "auto" })}>自动配色</button><span className="color-setting-value">{customTextColor ? floatingSettings.textColor : "选择颜色即使用"}</span></div></div>
-      </section>
-      <section className="settings-section"><h3>启动与关闭</h3>
-        <label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label>
-        <label className="confirmation-row"><input type="checkbox" checked={preferences.closeToTray} disabled={isPending("app", "closeToTray")} onChange={(event) => onUpdateApp({ closeToTray: event.target.checked })} />点击关闭按钮时最小化到系统托盘（关闭此开关则退出程序）</label>
-      </section>
-      <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存继续保存在 QYReader 本地数据目录；新版界面不会上传内容，也不会改变已有字段。</p></section>
-      <section className="settings-section software-update-section"><h3>软件更新</h3>
-        <div className="update-detail-row"><span>当前版本</span><strong>v{version || softwareUpdate.currentVersion}</strong></div>
-        <label className="confirmation-row"><input type="checkbox" checked={preferences.autoCheckUpdates} disabled={isPending("app", "autoCheckUpdates")} onChange={(event) => onUpdateApp({ autoCheckUpdates: event.target.checked })} />启动时自动检查正式版更新</label>
-        <div className="update-detail-row"><span>更新通道</span><strong>正式版</strong></div>
-        <div className={`update-status-card status-${softwareUpdate.status}`}><span className="update-status-dot" /><div><strong>检查状态</strong><p>{softwareUpdate.message}</p><small>上次检查：{formatUpdateTime(softwareUpdate.lastCheckedAt)}</small></div></div>
-        {softwareUpdate.status === "downloading" ? <div className="update-progress" aria-label={`更新下载进度 ${softwareUpdate.progressPercent}%`}><span style={{ width: `${softwareUpdate.progressPercent}%` }} /></div> : null}
-        <div className="update-actions">
-          <button className="secondary-button" disabled={["checking", "downloading", "installing"].includes(softwareUpdate.status)} onClick={onCheckUpdate}>{softwareUpdate.status === "checking" ? "正在检查…" : "检查更新"}</button>
-          {softwareUpdate.canDownload ? <button className="primary-button" onClick={onDownloadUpdate}>下载更新</button> : null}
-          {softwareUpdate.canInstall ? <button className="primary-button" onClick={onInstallUpdate}>立即安装</button> : null}
-          {softwareUpdate.status === "available" ? <button className="secondary-button" onClick={onSkipUpdate}>跳过 v{softwareUpdate.latestVersion}</button> : null}
-          <button className="secondary-button" onClick={() => onOpenUpdatePage("project")}>GitHub 项目主页</button>
-          {softwareUpdate.latestVersion ? <button className="secondary-button" onClick={() => onOpenUpdatePage("release")}>查看发布说明</button> : null}
+      <div className="modal-header settings-modal-header"><div><span className="modal-icon"><GearSix weight="fill" /></span><div><h2 id="settings-title">设置</h2><p>每项修改都会立即反馈，并自动保存</p></div></div><IconButton label="关闭设置" onClick={onClose}><X /></IconButton></div>
+      <div className="settings-layout">
+        <nav className="settings-nav" role="tablist" aria-label="设置分类">
+          {tabs.map(([value, label]) => <button key={value} role="tab" aria-selected={activeTab === value} className={activeTab === value ? "selected" : ""} onClick={() => setActiveTab(value)}>{label}</button>)}
+        </nav>
+        <div className="settings-scroll" data-settings-tab={activeTab}>
+          {activeTab === "general" ? <>
+            <section className="settings-section"><h3>界面主题</h3><div className="theme-options">{themes.map((theme) => <button key={theme} className={preferences.theme === theme ? "selected" : ""} disabled={isPending("app", "theme")} onClick={() => onUpdateApp({ theme })}>{theme}</button>)}</div></section>
+            <section className="settings-section"><h3>启动与关闭</h3>
+              <label className="confirmation-row"><input type="checkbox" checked={preferences.autoOpenLast} disabled={isPending("app", "autoOpenLast")} onChange={(event) => onUpdateApp({ autoOpenLast: event.target.checked })} />启动时自动打开上次阅读内容</label>
+              <label className="confirmation-row"><input type="checkbox" checked={preferences.closeToTray} disabled={isPending("app", "closeToTray")} onChange={(event) => onUpdateApp({ closeToTray: event.target.checked })} />点击关闭按钮时最小化到系统托盘（关闭此开关则退出程序）</label>
+            </section>
+            <section className="settings-section"><h3>缓存与数据</h3><p>书架、正文缓存、源文件备份与语音缓存保存在 QYReader 本地数据目录；应用不会上传阅读内容。</p></section>
+          </> : null}
+          {activeTab === "reading" ? <>
+            <section className="settings-section speech-settings"><h3>朗读设置</h3>
+              <label className="settings-field"><span>朗读音色</span><select value={speech.settings.ttsVoiceId} disabled={isPending("speech", "ttsVoiceId")} onChange={(event) => onUpdateSpeech({ ttsVoiceId: event.target.value })}>
+                <optgroup label="Edge 神经音色（需联网）">{edgeVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}</optgroup>
+                <optgroup label="本地系统音色（离线）">{localVoices.map((voice) => <option key={voice.id || "system-default"} value={voice.id}>{voice.label}</option>)}</optgroup>
+              </select></label>
+              {speech.loadingLocalVoices ? <p className="settings-hint">正在读取 Windows 本地音色…</p> : null}
+              {speech.localVoiceError ? <p className="settings-hint warning">{speech.localVoiceError}</p> : null}
+              <SettingsRange label="语速" min={80} max={400} step={10} value={speech.settings.ttsRate} disabled={isPending("speech", "ttsRate")} formatValue={(value) => `${(value / 200).toFixed(2)}×`} onCommit={(ttsRate) => onUpdateSpeech({ ttsRate })} />
+              <SettingsRange label="句间停顿" min={0} max={1} step={0.05} value={speech.settings.sentenceGapSeconds} disabled={isPending("speech", "sentenceGapSeconds")} formatValue={(value) => `${Number(value).toFixed(2)} 秒`} onCommit={(sentenceGapSeconds) => onUpdateSpeech({ sentenceGapSeconds })} />
+              <p className="settings-hint inline">切换音色或语速时，正在朗读的当前句会使用新设置重新开始，文字与声音保持一致。</p>
+            </section>
+            <section className="settings-section floating-settings-section"><h3>悬浮朗读</h3>
+              <div className="settings-field"><span>悬浮窗背景</span><div className="theme-options compact">{[["light", "浅色"], ["sepia", "米黄"], ["dark", "深色"]].map(([value, label]) => <button key={value} className={floatingSettings.background === value ? "selected" : ""} disabled={isPending("floating", "background")} onClick={() => onUpdateFloating({ background: value })}>{label}</button>)}</div></div>
+              <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.hoverDisplayEnabled} disabled={isPending("floating", "hoverDisplayEnabled")} onChange={(event) => onUpdateFloating({ hoverDisplayEnabled: event.target.checked })} />鼠标移开时显示上一段和下一段</label>
+              <label className="confirmation-row"><input type="checkbox" checked={floatingSettings.followReaderFont} disabled={isPending("floating", "followReaderFont")} onChange={(event) => onUpdateFloating({ followReaderFont: event.target.checked })} />跟随主阅读器字号（滚轮调字号后自动关闭）</label>
+              <div className="settings-field color-setting"><span>朗读字体颜色</span><div><input aria-label="悬浮窗朗读字体颜色" title="选择颜色后立即切换为自定义配色" type="color" value={pickerColor} onChange={(event) => { const patch = floatingTextColorPatch(event.target.value); if (patch) onUpdateFloating(patch); }} /><button className={!customTextColor ? "selected" : ""} onClick={() => onUpdateFloating({ textColor: "auto" })}>自动配色</button><span className="color-setting-value">{customTextColor ? floatingSettings.textColor : "选择颜色即使用"}</span></div></div>
+            </section>
+          </> : null}
+          {activeTab === "updates" ? <>
+            <section className="settings-section software-update-section"><h3>软件更新</h3>
+              <div className="update-detail-row"><span>当前版本</span><strong>v{version || softwareUpdate.currentVersion}</strong></div>
+              <label className="confirmation-row"><input type="checkbox" checked={preferences.autoCheckUpdates} disabled={isPending("app", "autoCheckUpdates")} onChange={(event) => onUpdateApp({ autoCheckUpdates: event.target.checked })} />启动时自动检查正式版更新</label>
+              <div className={`update-status-card status-${softwareUpdate.status}`}><span className="update-status-dot" /><div><strong>检查状态</strong><p>{softwareUpdate.message}</p><small>上次检查：{formatUpdateTime(softwareUpdate.lastCheckedAt)}</small></div></div>
+              {softwareUpdate.status === "downloading" ? <div className="update-progress" aria-label={`更新下载进度 ${softwareUpdate.progressPercent}%`}><span style={{ width: `${softwareUpdate.progressPercent}%` }} /></div> : null}
+              <div className="update-actions">
+                <button className="secondary-button" disabled={["checking", "downloading", "installing"].includes(softwareUpdate.status)} onClick={onCheckUpdate}>{softwareUpdate.status === "checking" ? "正在检查…" : "检查更新"}</button>
+                {softwareUpdate.canDownload ? <button className="primary-button" onClick={onDownloadUpdate}>查看并下载</button> : null}
+                {softwareUpdate.canInstall ? <button className="primary-button" onClick={onInstallUpdate}>立即安装</button> : null}
+                {softwareUpdate.status === "available" ? <button className="secondary-button" onClick={onSkipUpdate}>跳过 v{softwareUpdate.latestVersion}</button> : null}
+                <button className="secondary-button" onClick={() => onOpenUpdatePage("project")}>项目主页</button>
+              </div>
+              <p className="update-security-note">仅下载版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
+            </section>
+            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.4"} · Qt WebEngine 桌面版</p></section>
+          </> : null}
         </div>
-        <p className="update-security-note">仅从本项目 GitHub Release 下载与版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
-      </section>
-      <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.3"} · Qt WebEngine 桌面版</p></section>
+      </div>
+    </div></div>
+  );
+}
+
+function UpdateAvailableModal({ update, onDownload, onSkip, onOpenRelease, onClose }) {
+  const notes = update.releaseNotes?.trim() || "本次更新暂未提供详细说明，可打开完整发布页查看。";
+  return (
+    <div className="modal-backdrop update-prompt-backdrop"><div className="paste-modal update-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="update-prompt-title">
+      <div className="modal-header"><div><span className="modal-icon update"><GearSix weight="fill" /></span><div><h2 id="update-prompt-title">发现新版本 v{update.latestVersion}</h2><p>当前版本 v{update.currentVersion} · 更新前先看看优化内容</p></div></div><IconButton label="稍后再说" onClick={onClose}><X /></IconButton></div>
+      <section className="release-notes-card"><h3>本次更新内容</h3><pre>{notes}</pre></section>
+      <p className="update-security-note">下载后会先完成 SHA256 安全校验，不会静默安装。</p>
+      <div className="update-prompt-actions">
+        <button className="secondary-button" onClick={onOpenRelease}>查看完整说明</button>
+        <button className="secondary-button" onClick={onSkip}>跳过此版本</button>
+        <button className="secondary-button" onClick={onClose}>稍后再说</button>
+        <button className="primary-button" onClick={onDownload}>下载更新</button>
+      </div>
     </div></div>
   );
 }
@@ -1026,6 +1080,7 @@ function MainApplication() {
   const qaMode = new URLSearchParams(window.location.search).get("qa");
   const qaFloating = qaMode === "floating";
   const qaNetwork = qaMode === "network";
+  const qaUpdate = qaMode === "update";
   const qaEmptyLibrary = qaMode === "empty-library";
   const nativeTransportAvailable = Boolean(window.qt?.webChannelTransport);
   const demoQaFloating = qaFloating && !nativeTransportAvailable;
@@ -1048,8 +1103,9 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.3");
+  const [appVersion, setAppVersion] = useState("2.0.4");
   const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
+  const [updatePromptVersion, setUpdatePromptVersion] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [networkNotice, handlePlaybackEvent] = usePlaybackNetworkNotice(qaNetwork ? NETWORK_FALLBACK_NOTICE : null);
   const settingsPendingRef = useRef(new Set());
@@ -1064,6 +1120,7 @@ function MainApplication() {
   const consumedOpenIntentsRef = useRef(new Set());
   const startupIntentConsumedRef = useRef(false);
   const updateCheckStartedRef = useRef(false);
+  const dismissedUpdateVersionsRef = useRef(new Set());
 
   useEffect(() => {
     let active = true;
@@ -1090,6 +1147,19 @@ function MainApplication() {
       setAppVersion(connected.initialState.data.app.version);
       setSoftwareUpdate(connected.initialState.data.softwareUpdate);
       setWindowControls(connected.controls);
+      if (qaUpdate && connected.mode === "demo") {
+        updateCheckStartedRef.current = true;
+        setSoftwareUpdate({
+          ...connected.initialState.data.softwareUpdate,
+          status: "available",
+          latestVersion: "2.1.0",
+          message: "发现新版本 QYReader 2.1.0，可以查看优化内容后决定是否更新。",
+          releaseUrl: "https://github.com/superadminist/QYReader/releases/tag/v2.1.0",
+          publishedAt: "2026-09-15T08:00:00Z",
+          releaseNotes: "## 本次优化\n\n- 修复悬浮窗暂停时文字跳到下一句\n- 朗读音色和语速切换立即生效\n- 设置中心改为紧凑分页并修复滚动闪烁",
+          canDownload: true,
+        });
+      }
       connected.onBridgeError((raw) => {
         if (active) setBridgeError(readBridgeMessage(raw));
       });
@@ -1251,7 +1321,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.3");
+      setAppVersion(error.initialData?.app?.version || "2.0.4");
       setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
@@ -1262,6 +1332,19 @@ function MainApplication() {
       connectionRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const version = softwareUpdate.latestVersion;
+    if (
+      softwareUpdate.status === "available"
+      && version
+      && !dismissedUpdateVersionsRef.current.has(version)
+    ) {
+      setUpdatePromptVersion(version);
+    } else if (softwareUpdate.status !== "available") {
+      setUpdatePromptVersion("");
+    }
+  }, [softwareUpdate.status, softwareUpdate.latestVersion]);
 
   const beginReaderOpen = async (connection, bookId) => {
     readerOpenRequestRef.current = "";
@@ -1496,6 +1579,12 @@ function MainApplication() {
     if (!connection) return;
     const pendingIds = beginSettingsSave("app", patch);
     if (!pendingIds) return;
+    const previousPreferences = appPreferences;
+    setAppPreferences((current) => {
+      const next = { ...current, ...patch };
+      if (patch.theme) next.colorScheme = patch.theme === "夜间" ? "dark" : "light";
+      return next;
+    });
     try {
       const response = await connection.app.updatePreferences({ patch });
       setAppPreferences(response.data);
@@ -1508,6 +1597,7 @@ function MainApplication() {
         });
       }
     } catch (error) {
+      setAppPreferences(previousPreferences);
       setBridgeError(error.message || "应用设置保存失败。");
     } finally {
       finishSettingsSave(pendingIds);
@@ -1518,6 +1608,17 @@ function MainApplication() {
     if (!connection) return;
     const pendingIds = beginSettingsSave("speech", patch);
     if (!pendingIds) return;
+    const previousSpeech = speechState;
+    const previousReaderSettings = readerDataRef.current?.settings;
+    setSpeechState((current) => ({
+      ...current,
+      settings: { ...current.settings, ...patch },
+    }));
+    if (readerDataRef.current) {
+      const nextSettings = { ...readerDataRef.current.settings, ...patch };
+      readerDataRef.current = { ...readerDataRef.current, settings: nextSettings };
+      dispatchReader({ type: "SETTINGS", settings: nextSettings });
+    }
     try {
       const response = await connection.speech.updatePreferences({ patch });
       setSpeechState(response.data);
@@ -1527,6 +1628,11 @@ function MainApplication() {
         dispatchReader({ type: "SETTINGS", settings: nextSettings });
       }
     } catch (error) {
+      setSpeechState(previousSpeech);
+      if (readerDataRef.current && previousReaderSettings) {
+        readerDataRef.current = { ...readerDataRef.current, settings: previousReaderSettings };
+        dispatchReader({ type: "SETTINGS", settings: previousReaderSettings });
+      }
       setBridgeError(error.message || "朗读设置保存失败。");
     } finally {
       finishSettingsSave(pendingIds);
@@ -1558,6 +1664,9 @@ function MainApplication() {
   const checkForUpdates = async () => {
     const connection = connectionRef.current;
     if (!connection) return;
+    if (softwareUpdate.latestVersion) {
+      dismissedUpdateVersionsRef.current.delete(softwareUpdate.latestVersion);
+    }
     try {
       const response = await connection.updates.check({ manual: true });
       setSoftwareUpdate(response.data);
@@ -1568,6 +1677,7 @@ function MainApplication() {
   const downloadUpdate = async () => {
     const connection = connectionRef.current;
     if (!connection || !softwareUpdate.latestVersion) return;
+    setUpdatePromptVersion("");
     try {
       const response = await connection.updates.download(softwareUpdate.latestVersion);
       setSoftwareUpdate(response.data);
@@ -1578,6 +1688,8 @@ function MainApplication() {
   const skipUpdate = async () => {
     const connection = connectionRef.current;
     if (!connection || !softwareUpdate.latestVersion) return;
+    dismissedUpdateVersionsRef.current.add(softwareUpdate.latestVersion);
+    setUpdatePromptVersion("");
     try {
       const response = await connection.updates.skip(softwareUpdate.latestVersion);
       setSoftwareUpdate(response.data);
@@ -1603,6 +1715,12 @@ function MainApplication() {
     } catch (error) {
       setBridgeError(error.message || "无法打开 GitHub 页面。");
     }
+  };
+  const dismissUpdatePrompt = () => {
+    if (softwareUpdate.latestVersion) {
+      dismissedUpdateVersionsRef.current.add(softwareUpdate.latestVersion);
+    }
+    setUpdatePromptVersion("");
   };
   const toggleDarkMode = () => updateAppPreferences({ theme: appPreferences.colorScheme === "dark" ? "护眼" : "夜间" });
   const navigatePage = (nextPage) => {
@@ -1669,6 +1787,7 @@ function MainApplication() {
       {pasteOpen && <PasteModal onClose={() => setPasteOpen(false)} onImport={startPasteImport} demoMode={bridgeMode === "demo"} />}
       {importSelection && <ImportConfirmationModal selection={importSelection} onClose={() => { setImportSelection(null); setImportState({ ...EMPTY_IMPORT_STATE }); }} onStart={startFileImport} />}
       {settingsOpen && <SettingsModal preferences={appPreferences} speech={speechState} floatingSettings={nativeFloatingState?.settings || EMPTY_FLOATING_STATE.settings} version={appVersion} softwareUpdate={softwareUpdate} pending={settingsPending} onUpdateApp={updateAppPreferences} onUpdateSpeech={updateSpeechPreferences} onUpdateFloating={updateFloatingPreferences} onCheckUpdate={checkForUpdates} onDownloadUpdate={downloadUpdate} onSkipUpdate={skipUpdate} onInstallUpdate={installUpdate} onOpenUpdatePage={openUpdatePage} onClose={() => setSettingsOpen(false)} />}
+      {updatePromptVersion && softwareUpdate.latestVersion === updatePromptVersion ? <UpdateAvailableModal update={softwareUpdate} onDownload={downloadUpdate} onSkip={skipUpdate} onOpenRelease={() => openUpdatePage("release")} onClose={dismissUpdatePrompt} /> : null}
     </div>
   );
 }

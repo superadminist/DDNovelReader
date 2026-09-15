@@ -57,6 +57,8 @@ _EDGE_SYNTH_ATTEMPT_TIMEOUT_SECONDS = 20.0
 _EDGE_SYNTH_ATTEMPTS = 2
 _EDGE_RETRY_DELAY_SECONDS = 0.35
 _EDGE_BUFFERING_NOTICE_SECONDS = 1.5
+_EDGE_RECOVERY_INITIAL_SECONDS = 30.0
+_EDGE_RECOVERY_MAX_SECONDS = 300.0
 _EDGE_AUDIO_CACHE_ITEMS = 24
 _EDGE_AUDIO_CACHE_BYTES = 16 * 1024 * 1024
 
@@ -658,9 +660,16 @@ class SpeechController:
         self._sentence_gap = 0.10
         self._backend = "sapi"
         self._edge_voice = "zh-CN-XiaoxiaoNeural"
+        self._active_sentence_backend = "sapi"
         self._edge_prefetch = None
         self._edge_fail_posted = False
         self._edge_session_fallback = False
+        self._edge_recovery_token = 0
+        self._edge_recovery_due_at = 0.0
+        self._edge_recovery_backoff = _EDGE_RECOVERY_INITIAL_SECONDS
+        self._edge_recovery_key = None
+        self._edge_recovery_audio = None
+        self._edge_recovery_event = None
         self._edge_prime_token = 0
         self._edge_prime_key = None
         self._edge_prime_audio = None
@@ -1474,6 +1483,7 @@ class SpeechController:
             self._book = None
             self._state = "idle"
             self._gen += 1
+            self._reset_edge_recovery_locked()
             self._cv.notify_all()
             return self._gen
 
@@ -1485,6 +1495,7 @@ class SpeechController:
             self._state = "idle"
             self._gen += 1
             self._invalidate_edge_prime_locked()
+            self._reset_edge_recovery_locked()
             self._cv.notify_all()
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -1609,6 +1620,8 @@ class SpeechController:
         self._edge_prefetch = None
         self._edge_fail_posted = False
         self._edge_session_fallback = False
+        with self._cv:
+            self._reset_edge_recovery_locked()
         try:
             while True:
                 if self._should_stop(gen):
@@ -1652,6 +1665,7 @@ class SpeechController:
                 }
                 with self._cv:
                     backend = self._backend
+                    self._active_sentence_backend = backend
                 if backend == "edge":
                     ok = self._speak_edge(
                         text,
@@ -1682,7 +1696,7 @@ class SpeechController:
                         # this branch means pause raced with natural sentence
                         # completion, and replaying would wait forever for an
                         # already-consumed prefetch offset.
-                        if backend != "edge":
+                        if self._active_sentence_backend != "edge":
                             continue
                 if self._should_stop(gen):
                     return
@@ -1697,6 +1711,8 @@ class SpeechController:
                     time.sleep(gap)
                 off = next_orig
         finally:
+            with self._cv:
+                self._reset_edge_recovery_locked()
             if self._edge_prefetch is not None:
                 try:
                     self._edge_prefetch.close()
@@ -1755,6 +1771,7 @@ class SpeechController:
         """系统语音朗读一句，阻塞到结束或被暂停/停止打断。"""
         if not text:
             return False
+        self._active_sentence_backend = "sapi"
         done = threading.Event()
         started = threading.Event()
 
@@ -1845,6 +1862,93 @@ class SpeechController:
             raise last_error
         raise TimeoutError("Edge 语音生成超时")
 
+    def _reset_edge_recovery_locked(self):
+        """Invalidate a stale recovery probe while holding ``self._cv``."""
+        self._edge_recovery_token += 1
+        self._edge_recovery_due_at = 0.0
+        self._edge_recovery_backoff = _EDGE_RECOVERY_INITIAL_SECONDS
+        self._edge_recovery_key = None
+        self._edge_recovery_audio = None
+        self._edge_recovery_event = None
+
+    def _schedule_edge_recovery_locked(self):
+        """Schedule the first low-frequency probe after a real Edge failure."""
+        self._edge_recovery_due_at = (
+            time.monotonic() + _EDGE_RECOVERY_INITIAL_SECONDS
+        )
+        self._edge_recovery_backoff = _EDGE_RECOVERY_INITIAL_SECONDS
+        self._edge_recovery_key = None
+        self._edge_recovery_audio = None
+        self._edge_recovery_event = None
+
+    def _ensure_edge_recovery_probe(self, text, gen):
+        """Start at most one background connectivity probe for this session."""
+        with self._cv:
+            if (
+                not self._edge_session_fallback
+                or self._gen != gen
+                or self._state == "idle"
+                or self._book is None
+                or self._edge_recovery_event is not None
+                or self._edge_recovery_due_at <= 0
+                or time.monotonic() < self._edge_recovery_due_at
+            ):
+                return False
+            token = self._edge_recovery_token
+            key = (gen, token, self._edge_voice, int(self._rate))
+            ready = threading.Event()
+            self._edge_recovery_key = key
+            self._edge_recovery_audio = None
+            self._edge_recovery_event = ready
+
+        def probe():
+            try:
+                audio = self._edge_synthesize(text)
+            except Exception:
+                audio = None
+            with self._cv:
+                if key == self._edge_recovery_key:
+                    self._edge_recovery_audio = audio
+                    ready.set()
+
+        threading.Thread(
+            target=probe,
+            name="dd-edge-recovery",
+            daemon=True,
+        ).start()
+        return True
+
+    def _consume_edge_recovery_result(self, gen):
+        """Accept a successful probe only at the next sentence boundary."""
+        with self._cv:
+            ready = self._edge_recovery_event
+            key = self._edge_recovery_key
+            expected = (
+                gen,
+                self._edge_recovery_token,
+                self._edge_voice,
+                int(self._rate),
+            )
+            if ready is None or not ready.is_set() or key != expected:
+                return False
+            audio = self._edge_recovery_audio
+            self._edge_recovery_key = None
+            self._edge_recovery_audio = None
+            self._edge_recovery_event = None
+            if audio:
+                self._edge_session_fallback = False
+                self._edge_recovery_due_at = 0.0
+                self._edge_recovery_backoff = _EDGE_RECOVERY_INITIAL_SECONDS
+                self._edge_fail_posted = False
+                return True
+            delay = self._edge_recovery_backoff
+            self._edge_recovery_due_at = time.monotonic() + delay
+            self._edge_recovery_backoff = min(
+                _EDGE_RECOVERY_MAX_SECONDS,
+                max(_EDGE_RECOVERY_INITIAL_SECONDS, delay * 2),
+            )
+            return False
+
     def _speak_edge(
         self,
         text,
@@ -1857,10 +1961,19 @@ class SpeechController:
         start_event=None,
     ):
         """Edge 语音：整本缓存命中直接播放；否则批量预取/按需合成；失败回退系统语音。"""
+        recovered_from_fallback = False
         if self._edge_session_fallback:
-            return self._speak_sapi(text, gen, start_event)
+            recovered_from_fallback = self._consume_edge_recovery_result(gen)
+            if not recovered_from_fallback:
+                self._ensure_edge_recovery_probe(text, gen)
+                return self._speak_sapi(text, gen, start_event)
         wait_started = time.monotonic()
         buffering_posted = False
+
+        def play_edge(audio_bytes):
+            if recovered_from_fallback:
+                self._post({"type": "edge_recovered", "backend": "edge"}, gen)
+            return self._speak_edge_play(audio_bytes, gen, start_event)
 
         def report_buffering_if_needed():
             nonlocal buffering_posted
@@ -1899,7 +2012,7 @@ class SpeechController:
                 self._edge_prefetch = _EdgePrefetch(
                     self._edge_synthesize, content, next_off, _EdgePrefetch.MAX_AHEAD
                 )
-            return self._speak_edge_play(audio, gen, start_event)
+            return play_edge(audio)
         if primed:
             # The single-flight preparation already failed.  Do not perform
             # the same slow request again before falling back to SAPI.
@@ -1933,17 +2046,19 @@ class SpeechController:
                 return False
         if audio:
             self._remember_edge_audio(cache_key, audio)
-            return self._speak_edge_play(audio, gen, start_event)
+            return play_edge(audio)
         # A real synthesis failure keeps the existing fallback behavior, but
         # locks the remainder of this session to SAPI to prevent voice flapping.
         self._edge_session_fallback = True
+        with self._cv:
+            self._schedule_edge_recovery_locked()
         if not self._edge_fail_posted:
             self._edge_fail_posted = True
             self._post(
                 {
                     "type": "error",
                     "code": "EDGE_OFFLINE_FALLBACK",
-                    "message": "联网语音生成失败，本次朗读将继续使用系统语音",
+                    "message": "联网语音生成失败，暂时使用系统语音；网络恢复后将自动切回所选音色",
                     "retryable": True,
                     "fallback_backend": "sapi",
                 },
@@ -1961,6 +2076,7 @@ class SpeechController:
         """用 Windows MCI（winmm.dll）播放预生成的 MP3，支持暂停/停止（零第三方依赖）。"""
         if not audio:
             return False
+        self._active_sentence_backend = "edge"
         tmp_path = None
         try:
             tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)

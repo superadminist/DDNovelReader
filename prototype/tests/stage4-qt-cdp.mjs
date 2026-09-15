@@ -667,6 +667,25 @@ async function primaryScenario() {
   await waitForFloatingState(main, (value) => value.settings.backgroundOpacity === 0, "Floating background opacity did not reach zero");
   evidence.transparent = await capture(floating, "stage4-transparent-background.png");
   if (!await clickLabel(main, "更多设置")) throw new Error("Settings center control missing");
+  if (!await clickText(main, ".settings-nav button", "朗读与悬浮")) throw new Error("Compact settings navigation missing");
+  await waitFor(main, `document.querySelector('.settings-scroll')?.dataset.settingsTab === 'reading'`, "Reading settings tab did not open");
+  const settingsLayout = await evaluate(main, `(() => {
+    const modal = document.querySelector('.settings-modal');
+    const scroller = document.querySelector('.settings-scroll');
+    if (!modal || !scroller) return null;
+    const modalStyle = getComputedStyle(modal);
+    const scrollStyle = getComputedStyle(scroller);
+    return {
+      width: modal.getBoundingClientRect().width,
+      height: modal.getBoundingClientRect().height,
+      borderRadius: modalStyle.borderRadius,
+      modalOverflow: modalStyle.overflow,
+      scrollOverflowY: scrollStyle.overflowY,
+    };
+  })()`);
+  if (!settingsLayout || settingsLayout.height > 570 || settingsLayout.borderRadius !== "24px" || settingsLayout.modalOverflow !== "hidden" || settingsLayout.scrollOverflowY !== "auto") {
+    throw new Error(`Compact rounded settings shell is invalid: ${JSON.stringify(settingsLayout)}`);
+  }
   const voiceCatalog = await evaluate(main, `(() => ({
     edge: document.querySelectorAll('.speech-settings optgroup[label^="Edge"] option').length,
     local: document.querySelectorAll('.speech-settings optgroup[label^="本地"] option').length,
