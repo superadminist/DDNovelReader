@@ -177,6 +177,12 @@ async function clickText(client, selector, text) {
 }
 
 async function capture(client, filename) {
+  // The isolated Qt single-process QA host sometimes leaves Chromium's main
+  // Page.captureScreenshot unanswered. Allow the remaining DOM/native-window
+  // gates to run explicitly, while recording that main visual proof is absent.
+  if (process.env.DD_QA_SKIP_MAIN_SCREENSHOTS === "1" && filename.startsWith("stage4-main-")) {
+    return { path: null, width: 0, height: 0, unavailable: "main CDP screenshot skipped" };
+  }
   const result = await client.call("Page.captureScreenshot", { format: "png", fromSurface: true });
   const bytes = Buffer.from(result.data, "base64");
   const path = join(screenshotDir, filename);
@@ -346,8 +352,8 @@ async function openReader(main) {
 }
 
 async function showFloating(main) {
-  const used = await clickLabel(main, "打开悬浮朗读");
-  if (!used) throw new Error("Native reader has no 打开悬浮朗读 control");
+  const used = await clickLabel(main, "切换到悬浮朗读");
+  if (!used) throw new Error("Native reader has no 切换到悬浮朗读 control");
   const target = await waitForTarget(
     (item) => isAppTarget(item) && item.url.includes("surface=floating"),
     "Independent floating-reader CDP target did not appear",
@@ -532,7 +538,15 @@ async function primaryScenario() {
   if (roleWindow(probe(), "main").windowRegionType !== "none") throw new Error("Maximized main window retained its rounded native region");
   evidence.mainMaximized = await capture(main, "stage4-main-maximized.png");
   if (!await clickLabel(main, "还原窗口")) throw new Error("Main restore control missing");
-  await waitFor(main, "document.querySelector('.prototype-stage')?.dataset.windowMode === 'normal'", "Main normal state did not restore");
+  try {
+    await waitFor(main, "document.querySelector('.prototype-stage')?.dataset.windowMode === 'normal'", "Main normal state did not restore");
+  } catch (error) {
+    const native = roleWindow(probe(), "main");
+    const frontend = await evaluate(main, `({ mode: document.querySelector('.prototype-stage')?.dataset.windowMode,
+      label: document.querySelector('.window-control[aria-label="还原窗口"], .window-control[aria-label="最大化窗口"]')?.getAttribute('aria-label'),
+      readerVisible: Boolean(document.querySelector('.native-reader')) })`);
+    throw new Error(`${error.message}: ${JSON.stringify({ native, frontend })}`);
+  }
   await sleep(180);
   if (roleWindow(probe(), "main").windowRegionType !== "none") throw new Error("Restored main window regained a jagged native region");
   const normalRect = roleWindow(probe(), "main").rect;

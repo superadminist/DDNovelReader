@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   ArrowLeft,
   Article,
@@ -38,6 +38,7 @@ import {
   settingsPatchIds,
 } from "./floatingSettings.js";
 import { windowControlPresentation } from "./windowControls.js";
+import { shouldApplyAudioWindow, windowContainsSentence } from "./readerWindowSync.js";
 
 const EMPTY_CONTROLS = {
   minimizeWindow() {},
@@ -59,7 +60,7 @@ const DEFAULT_APP_PREFERENCES = {
 
 const DEFAULT_SOFTWARE_UPDATE = {
   status: "idle",
-  currentVersion: "2.0.6",
+  currentVersion: "2.0.7",
   latestVersion: "",
   lastCheckedAt: "",
   message: "尚未检查更新。",
@@ -846,6 +847,15 @@ const ReaderTextBlockView = memo(function ReaderTextBlockView({ block, highlight
   );
 });
 
+const ReaderCopyView = memo(function ReaderCopyView({ blocks, sentenceStart, sentenceEnd, paragraphMode, firstLineIndent }) {
+  return <div className="reading-copy">{blocks.map((block, index) => {
+    const overlaps = sentenceStart !== null && sentenceEnd > block.startOffset && sentenceStart < block.endOffset;
+    const highlightStart = overlaps ? Math.max(sentenceStart, block.startOffset) : null;
+    const highlightEnd = overlaps ? Math.min(sentenceEnd, block.endOffset) : null;
+    return <div id={`native-reader-block-${index}`} key={block.id}><ReaderTextBlockView block={block} highlightStart={highlightStart} highlightEnd={highlightEnd} paragraphMode={paragraphMode} firstLineIndent={firstLineIndent} /></div>;
+  })}</div>;
+});
+
 function NativeReaderToolbar({ data, panelMode, setPanelMode, onBack, onSettings, floatingAvailable, floatingVisible, onFloatingToggle, onOpenSettings }) {
   const { settings } = data;
   return (
@@ -908,11 +918,12 @@ function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, o
     const requested = `${sentence.chapterIndex}:${sentence.startOffset}` === locateRequestedRef.current;
     const target = currentSentenceTarget();
     if (requested && target) locateRequestedRef.current = "";
-    target?.scrollIntoView({
-      block: "center",
-      behavior: requested || playback.status !== "paused" ? "smooth" : "auto",
-    });
-  }, [sentence?.chapterIndex, sentence?.startOffset, playback?.status, windowData]);
+    if (!target) return;
+    const viewport = readingSheetRef.current.getBoundingClientRect();
+    const mark = target.getBoundingClientRect();
+    if (!requested && mark.top >= viewport.top + 16 && mark.bottom <= viewport.bottom - 16) return;
+    target.scrollIntoView({ block: "center", behavior: requested ? "smooth" : "auto" });
+  }, [sentence?.chapterIndex, sentence?.startOffset, windowData]);
 
   if (state.phase === "opening") return <section className="reader-page reader-message"><div><strong>正在打开真实内容…</strong><span>正在恢复章节与阅读进度</span></div></section>;
   if (state.phase !== "ready" || !data) return <section className="reader-page reader-message"><div><strong>无法打开阅读器</strong><span>{state.error || "请返回内容库后重试。"}</span><button className="secondary-button" onClick={onBack}>返回内容库</button></div></section>;
@@ -977,12 +988,7 @@ function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, o
           <p className="chapter-index">CHAPTER {String(windowData.chapterIndex + 1).padStart(2, "0")}</p><h1>{windowData.chapterTitle}</h1><div className="title-rule" />
           {state.windowLoading ? <div className="reader-window-loading">正在加载正文窗口…</div> : null}
           {windowData.hasBefore ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowStartOffset)}>加载前文</button> : null}
-          <div className="reading-copy">{windowData.blocks.map((block, index) => {
-            const overlaps = sentence && sentence.endOffset > block.startOffset && sentence.startOffset < block.endOffset;
-            const highlightStart = overlaps ? Math.max(sentence.startOffset, block.startOffset) : null;
-            const highlightEnd = overlaps ? Math.min(sentence.endOffset, block.endOffset) : null;
-            return <div id={`native-reader-block-${index}`} key={block.id}><ReaderTextBlockView block={block} highlightStart={highlightStart} highlightEnd={highlightEnd} paragraphMode={data.settings.paragraphMode} firstLineIndent={data.settings.firstLineIndent} /></div>;
-          })}</div>
+          <ReaderCopyView blocks={windowData.blocks} sentenceStart={sentence?.startOffset ?? null} sentenceEnd={sentence?.endOffset ?? null} paragraphMode={data.settings.paragraphMode} firstLineIndent={data.settings.firstLineIndent} />
           {windowData.hasAfter ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowEndOffset)}>加载后文</button> : null}
           <div className="page-count">{data.position.progressPercent.toFixed(1)}%</div>
         </article>
@@ -1105,7 +1111,7 @@ function SettingsModal({ preferences, speech, floatingSettings, version, softwar
               </div>
               <p className="update-security-note">仅下载版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
             </section>
-            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.6"} · Qt WebEngine 桌面版</p></section>
+            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.7"} · Qt WebEngine 桌面版</p></section>
           </> : null}
         </div>
       </div>
@@ -1157,7 +1163,7 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.6");
+  const [appVersion, setAppVersion] = useState("2.0.7");
   const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
   const [updatePromptVersion, setUpdatePromptVersion] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1169,6 +1175,8 @@ function MainApplication() {
   const readerSessionRef = useRef("");
   const readerDataRef = useRef(null);
   const playbackSequenceRef = useRef(-1);
+  const readerWindowRequestRef = useRef(0);
+  const audioWindowPendingRef = useRef("");
   const readerSearchRequestRef = useRef("");
   const pendingOpenIntentRef = useRef(null);
   const consumedOpenIntentsRef = useRef(new Set());
@@ -1307,6 +1315,8 @@ function MainApplication() {
         readerSessionRef.current = event.data.sessionId;
         readerDataRef.current = event.data;
         playbackSequenceRef.current = -1;
+        readerWindowRequestRef.current += 1;
+        audioWindowPendingRef.current = "";
         pendingOpenIntentRef.current = null;
         dispatchReader({ type: "OPENED", requestId: event.requestId, data: event.data });
         setPage("reader");
@@ -1327,19 +1337,21 @@ function MainApplication() {
         if (event.error && event.error.code !== "EDGE_OFFLINE_FALLBACK") setBridgeError(event.error.message);
         const sentence = event.playback.sentence;
         const currentWindow = readerDataRef.current.window;
-        const outsideWindow = sentence && (
-          sentence.chapterIndex !== currentWindow.chapterIndex
-          || sentence.startOffset < currentWindow.windowStartOffset
-          || sentence.startOffset >= currentWindow.windowEndOffset
-        );
-        if (!outsideWindow) return;
+        if (event.reason !== "sentenceStart" || !sentence || windowContainsSentence(currentWindow, sentence)) return;
+        const sentenceKey = `${event.sessionId}:${sentence.chapterIndex}:${sentence.startOffset}`;
+        if (audioWindowPendingRef.current?.key === sentenceKey) return;
+        const requestId = ++readerWindowRequestRef.current;
+        audioWindowPendingRef.current = { key: sentenceKey, requestId };
         try {
           const response = await connected.reader.getWindow({ sessionId: event.sessionId, chapterIndex: sentence.chapterIndex, anchorOffset: sentence.startOffset });
-          if (!active || event.sessionId !== readerSessionRef.current) return;
+          if (!active || event.sessionId !== readerSessionRef.current
+            || !shouldApplyAudioWindow(requestId, readerWindowRequestRef.current, sentence, readerDataRef.current?.playback, response.data)) return;
           readerDataRef.current = { ...readerDataRef.current, window: response.data };
-          startTransition(() => dispatchReader({ type: "WINDOW", window: response.data }));
+          dispatchReader({ type: "WINDOW", window: response.data });
         } catch (error) {
-          if (active) setBridgeError(error.message || "无法加载当前朗读位置。");
+          if (active && requestId === readerWindowRequestRef.current) setBridgeError(error.message || "无法加载当前朗读位置。");
+        } finally {
+          if (audioWindowPendingRef.current?.requestId === requestId) audioWindowPendingRef.current = null;
         }
       });
       connected.onFloatingReaderChanged((event) => {
@@ -1375,7 +1387,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.6");
+      setAppVersion(error.initialData?.app?.version || "2.0.7");
       setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
@@ -1492,29 +1504,35 @@ function MainApplication() {
     const connection = connectionRef.current;
     const sessionId = readerSessionRef.current;
     if (!connection || !sessionId) return;
+    const requestId = ++readerWindowRequestRef.current;
+    audioWindowPendingRef.current = "";
     dispatchReader({ type: "WINDOW_LOADING" });
     try {
       const response = await connection.reader.getWindow({ sessionId, chapterIndex, anchorOffset });
-      if (sessionId !== readerSessionRef.current) return;
+      if (sessionId !== readerSessionRef.current || requestId !== readerWindowRequestRef.current) return;
       readerDataRef.current = { ...readerDataRef.current, window: response.data };
-      startTransition(() => dispatchReader({ type: "WINDOW", window: response.data }));
+      dispatchReader({ type: "WINDOW", window: response.data });
     } catch (error) {
-      dispatchReader({ type: "FAILED", error: error.message || "正文窗口加载失败。" });
+      if (requestId === readerWindowRequestRef.current) dispatchReader({ type: "FAILED", error: error.message || "正文窗口加载失败。" });
     }
   };
   const navigateReader = async (target) => {
     const connection = connectionRef.current;
     const sessionId = readerSessionRef.current;
     if (!connection || !sessionId) return;
+    const requestId = ++readerWindowRequestRef.current;
+    audioWindowPendingRef.current = "";
     dispatchReader({ type: "WINDOW_LOADING" });
     try {
       const response = await connection.reader.navigate({ sessionId, target });
-      if (sessionId !== readerSessionRef.current) return;
+      if (sessionId !== readerSessionRef.current || requestId !== readerWindowRequestRef.current) return;
       readerDataRef.current = { ...readerDataRef.current, position: response.data.position, window: response.data.window, playback: response.data.playback };
-      startTransition(() => dispatchReader({ type: "NAVIGATED", data: response.data }));
+      dispatchReader({ type: "NAVIGATED", data: response.data });
     } catch (error) {
-      setBridgeError(error.message || "无法跳转到目标位置。");
-      dispatchReader({ type: "WINDOW", window: readerDataRef.current.window });
+      if (requestId === readerWindowRequestRef.current) {
+        setBridgeError(error.message || "无法跳转到目标位置。");
+        dispatchReader({ type: "WINDOW", window: readerDataRef.current.window });
+      }
     }
   };
   const updateReaderPosition = async (chapterIndex, charOffset) => {

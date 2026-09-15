@@ -178,6 +178,10 @@ class PlaybackService:
                     "next": None,
                 }
             chapter_index = self._chapter_index
+            if self._sentence is not None and self._status in {"playing", "paused"}:
+                # Pending navigation must not replace the last audible lyric,
+                # including when the next sentence belongs to another chapter.
+                chapter_index = self._sentence["chapterIndex"]
             chapter = self._book.chapters[chapter_index]
             entries = self._sentence_entries(chapter_index)
             if not entries:
@@ -319,11 +323,13 @@ class PlaybackService:
         target = self._adjacent_position(delta)
         if target is None:
             return False
-        chapter_index, char_offset, sentence = target
+        chapter_index, char_offset, _sentence = target
         active = self._speech.is_active()
         self._chapter_index = chapter_index
         self._char_offset = char_offset
-        self._sentence = sentence
+        if not active:
+            self._sentence = None
+        self._deferred_sentence_start = None
         self._fallback_active = False
         self._terminal_generation = None
         if active:

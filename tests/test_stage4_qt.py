@@ -173,6 +173,41 @@ class _FloatingGeometryHarness:
 
 
 class Stage4FloatingServiceTests(unittest.TestCase):
+    def test_main_restore_clears_stuck_frameless_maximize_state(self):
+        class Bridge:
+            emitted = 0
+
+            def emitWindowState(self):
+                self.emitted += 1
+
+        class Window:
+            bridge = Bridge()
+            maximized = True
+
+            def showNormal(self):
+                pass  # Simulate the Qt translucent-window failure.
+
+            def isMaximized(self):
+                return self.maximized
+
+            def winId(self):
+                return 123
+
+            def setWindowState(self, state):
+                self.maximized = state != Qt.WindowState.WindowNoState
+
+            def geometry(self):
+                return QRect(0, 0, 1200, 700)
+
+        window = Window()
+        native = mock.Mock()
+        with mock.patch("novelreader.qt_host.ctypes.windll", user32=native):
+            DesktopWindow.restoreNormalWindow(window)
+        native.ShowWindow.assert_called_once()
+        self.assertEqual(native.ShowWindow.call_args.args[1], 9)
+        self.assertFalse(window.maximized)
+        self.assertEqual(window.bridge.emitted, 1)
+
     def test_main_and_floating_web_views_use_separate_composition_paths(self):
         class View:
             def __init__(self):

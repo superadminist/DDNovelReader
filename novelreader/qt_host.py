@@ -487,9 +487,19 @@ class DesktopWindow(QMainWindow):
         self.hide()
 
     def restoreFromTray(self) -> None:
-        self.showNormal()
+        self.restoreNormalWindow()
         self.raise_()
         self.activateWindow()
+
+    def restoreNormalWindow(self) -> None:
+        self.showNormal()
+        if sys.platform == "win32" and self.isMaximized():
+            # Some translucent frameless Qt windows retain WS_MAXIMIZE after
+            # QWidget.showNormal(). Restore the exact top-level HWND once;
+            # Windows will use its saved normal placement and notify Qt.
+            ctypes.windll.user32.ShowWindow(ctypes.c_void_p(int(self.winId())), 9)
+            self.setWindowState(Qt.WindowState.WindowNoState)
+            self.bridge.emitWindowState()
 
     def hideMainForFloating(self) -> None:
         self.hide()
@@ -542,7 +552,7 @@ class DesktopWindow(QMainWindow):
             if self._fullscreen_restore_maximized:
                 self.showMaximized()
             else:
-                self.showNormal()
+                self.restoreNormalWindow()
             return
         self._fullscreen_restore_maximized = self.isMaximized()
         self.showFullScreen()

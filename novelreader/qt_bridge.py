@@ -898,7 +898,11 @@ class DesktopBridge(QObject):
     @Slot()
     def toggleMaximizeWindow(self) -> None:
         if self._window.isMaximized():
-            self._window.showNormal()
+            restore = getattr(self._window, "restoreNormalWindow", None)
+            if callable(restore):
+                restore()
+            else:
+                self._window.showNormal()
         else:
             self._window.showMaximized()
 

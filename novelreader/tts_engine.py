@@ -1776,8 +1776,12 @@ class SpeechController:
         self._active_sentence_backend = "sapi"
         done = threading.Event()
         started = threading.Event()
+        result = {"completed": None, "error": None}
+        utterance_name = f"sapi-{gen}-{id(done)}"
 
-        def _on_started(name=None, **kw):
+        def _on_audio_started(name=None, **kw):
+            if name != utterance_name:
+                return
             if started.is_set():
                 return
             started.set()
@@ -1785,18 +1789,32 @@ class SpeechController:
                 self._post(dict(start_event), gen)
 
         def _on_finished(name=None, completed=None, **kw):
+            if name != utterance_name:
+                return
+            result["completed"] = completed
+            done.set()
+
+        def _on_error(name=None, exception=None, **kw):
+            if name != utterance_name:
+                return
+            result["error"] = exception or RuntimeError("系统语音驱动出错")
             done.set()
 
         started_token = None
         finished_token = None
+        error_token = None
         try:
             self._ensure_engine()
             if self._engine is None:
                 raise RuntimeError("系统语音不可用")
             self._sync_props()
-            started_token = self._engine.connect("started-utterance", _on_started)
+            # SAPI5 emits started-utterance before calling the asynchronous
+            # Speak API. Its first started-word comes from StartStream, when
+            # audio output has actually begun.
+            started_token = self._engine.connect("started-word", _on_audio_started)
             finished_token = self._engine.connect("finished-utterance", _on_finished)
-            self._engine.say(text)
+            error_token = self._engine.connect("error", _on_error)
+            self._engine.say(text, name=utterance_name)
             while not done.is_set():
                 if self._should_stop(gen):
                     self._engine.stop()  # 停止/切书：同线程打断
@@ -1807,9 +1825,24 @@ class SpeechController:
                         break
                 try:
                     self._engine.iterate()
-                except Exception:
-                    break
+                except Exception as exc:
+                    raise RuntimeError("系统语音事件循环失败") from exc
                 done.wait(0.02)
+            if not done.is_set() and not self._should_stop(gen):
+                with self._cv:
+                    paused = self._state == "paused"
+                if not paused:
+                    raise RuntimeError("系统语音未确认完成")
+            with self._cv:
+                paused = self._state == "paused"
+            interrupted = self._should_stop(gen) or paused
+            if result["error"] is not None and not interrupted:
+                raise RuntimeError("系统语音驱动出错") from result["error"]
+            if done.is_set() and not interrupted:
+                if result["completed"] is not True:
+                    raise RuntimeError("系统语音未完整读完")
+                if not started.is_set():
+                    raise RuntimeError("系统语音未确认开始")
         except Exception as e:
             self._post(
                 {
@@ -1823,7 +1856,7 @@ class SpeechController:
             )
             return False
         finally:
-            for token in (started_token, finished_token):
+            for token in (started_token, finished_token, error_token):
                 if token is None:
                     continue
                 try:
@@ -2183,7 +2216,9 @@ def _set_process_volume(volume_0_100):
 
 
 def _mci_play():
-    _mci_send(f"play {_MCI_ALIAS}")
+    err, _ = _mci_send(f"play {_MCI_ALIAS}")
+    if err:
+        raise RuntimeError(f"MCI play 失败 code={err}")
 
 
 def _mci_pause():
@@ -2191,7 +2226,7 @@ def _mci_pause():
 
 
 def _mci_resume():
-    _mci_send(f"play {_MCI_ALIAS}")
+    _mci_play()
 
 
 def _mci_stop():
@@ -2204,7 +2239,9 @@ def _mci_close():
 
 def _mci_playing():
     """查询是否仍在播放/暂停中。自然播放结束返回 False。"""
-    _, mode = _mci_send(f"status {_MCI_ALIAS} mode")
+    err, mode = _mci_send(f"status {_MCI_ALIAS} mode")
+    if err:
+        raise RuntimeError(f"MCI status 失败 code={err}")
     mode = mode.strip().lower()
     return mode in ("playing", "paused")
 

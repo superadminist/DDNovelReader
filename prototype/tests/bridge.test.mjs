@@ -18,6 +18,19 @@ import {
   settingsPatchIds,
 } from "../src/floatingSettings.js";
 import { windowControlPresentation } from "../src/windowControls.js";
+import { shouldApplyAudioWindow, windowContainsSentence } from "../src/readerWindowSync.js";
+
+test("audio window ignores stale or wrong-chapter responses", () => {
+  const first = { chapterIndex: 0, startOffset: 10 };
+  const second = { chapterIndex: 0, startOffset: 200 };
+  const firstWindow = { chapterIndex: 0, windowStartOffset: 0, windowEndOffset: 100 };
+  const secondWindow = { chapterIndex: 0, windowStartOffset: 150, windowEndOffset: 250 };
+  assert.ok(windowContainsSentence(firstWindow, first));
+  assert.equal(windowContainsSentence(firstWindow, second), false);
+  assert.equal(shouldApplyAudioWindow(1, 2, first, { sentence: second }, firstWindow), false);
+  assert.equal(shouldApplyAudioWindow(2, 2, second, { sentence: second }, firstWindow), false);
+  assert.equal(shouldApplyAudioWindow(2, 2, second, { sentence: second }, secondWindow), true);
+});
 
 
 function signal() {
@@ -744,7 +757,9 @@ test("active reader scrolls cannot passively move the shared playback sentence",
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
   assert.match(source, /const handleScroll = \(event\) => \{[\s\S]*if \(playback\.status !== "idle"\) return;/);
   assert.match(source, /\[playback\?\.status\]/);
-  assert.match(source, /behavior: requested \|\| playback\.status !== "paused" \? "smooth" : "auto"/);
+  assert.match(source, /behavior: requested \? "smooth" : "auto"/);
+  assert.match(source, /mark\.top >= viewport\.top \+ 16 && mark\.bottom <= viewport\.bottom - 16/);
+  assert.doesNotMatch(source, /\[sentence\?\.chapterIndex, sentence\?\.startOffset, playback\?\.status, windowData\]/);
 });
 
 test("return-to-current-reader-text is a scroll-only playback-bar action", async () => {
