@@ -491,6 +491,9 @@ class DesktopWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def hideMainForFloating(self) -> None:
+        self.hide()
+
     def requestApplicationExit(self) -> None:
         self._exit_requested = True
         self.close()

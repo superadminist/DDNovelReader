@@ -651,6 +651,7 @@ class SpeechController:
         self._ci = 0
         self._off = 0
         self._gen = 0  # 会话代号：每次 start 自增
+        self._resume_counter = 0
         self._queue = queue.Queue()
         self._pending_voice = None  # SAPI 语音
         self._applied_voice = None
@@ -1474,6 +1475,7 @@ class SpeechController:
         with self._cv:
             if self._state == "paused":
                 self._state = "playing"
+                self._resume_counter += 1
                 self._cv.notify_all()
                 return True
             return False
@@ -2088,6 +2090,8 @@ class SpeechController:
             _mci_set_volume(self._volume)  # MCI 层音量（回退）
             _set_process_volume(self._volume)  # Core Audio 进程音量（主要）
             _mci_play()
+            with self._cv:
+                seen_resume = self._resume_counter
             if start_event is not None:
                 self._post(dict(start_event), gen)
             while _mci_playing():
@@ -2102,6 +2106,11 @@ class SpeechController:
                             _mci_stop()
                             break
                         _mci_resume()
+                    if self._resume_counter != seen_resume:
+                        seen_resume = self._resume_counter
+                        # A very fast resume can happen before the worker
+                        # reaches the MCI pause branch. Confirm it here too.
+                        self._post({"type": "sentence_resume"}, gen)
                 time.sleep(0.03)
             _mci_close()
             return True

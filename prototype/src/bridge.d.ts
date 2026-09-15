@@ -472,6 +472,7 @@ export interface FloatingReaderControls {
   getState(): Promise<BridgeResponse<FloatingReaderState>>;
   show(): Promise<BridgeResponse<FloatingReaderState>>;
   close(): Promise<BridgeResponse<{ closed: boolean }>>;
+  returnToMain(): Promise<BridgeResponse<{ closed: boolean }>>;
   updateSettings(input: {
     patch: Partial<Pick<
       FloatingReaderSettings,

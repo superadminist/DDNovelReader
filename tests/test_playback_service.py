@@ -282,8 +282,36 @@ class PlaybackServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.snapshot()["sentence"])
         self.service.control("play", "resume-edge")
         resumed = self.service.drain_events()
-        self.assertEqual([event["reason"] for event in resumed], ["sentenceStart", "state"])
-        self.assertEqual(resumed[0]["playback"]["sentence"]["text"], "第一句。")
+        self.assertEqual([event["reason"] for event in resumed], ["state"])
+        self.assertIsNone(self.service.snapshot()["sentence"])
+        self.speech.emit({"type": "sentence_resume", "generation": generation})
+        confirmed = self.service.drain_events()
+        self.assertEqual([event["reason"] for event in confirmed], ["sentenceStart"])
+        self.assertEqual(confirmed[0]["playback"]["sentence"]["text"], "第一句。")
+
+    def test_repeated_edge_pause_resume_never_advances_before_audio_confirmation(self):
+        self.speech._backend = "edge"
+        self.service.control("play", "play-edge")
+        generation = self.speech.generation()
+        self.speech.emit({
+            "type": "sentence_start", "generation": generation,
+            "chapter_idx": 0, "char_offset": 0, "char_end": 4, "text": "第一句。",
+        })
+        self.service.drain_events()
+        for index in range(3):
+            self.service.control("pause", f"pause-{index}")
+            self.speech.emit({
+                "type": "sentence_start", "generation": generation,
+                "chapter_idx": 0, "char_offset": 4, "char_end": 8, "text": "第二句！",
+            })
+            self.service.drain_events()
+            self.assertEqual(self.service.snapshot()["sentence"]["text"], "第一句。")
+            self.service.control("play", f"resume-{index}")
+            self.service.drain_events()
+            self.assertEqual(self.service.snapshot()["sentence"]["text"], "第一句。")
+        self.speech.emit({"type": "sentence_resume", "generation": generation})
+        self.service.drain_events()
+        self.assertEqual(self.service.snapshot()["sentence"]["text"], "第二句！")
 
     def test_voice_or_rate_refresh_restarts_current_sentence_and_preserves_pause(self):
         self.service.control("play", "play-1")
@@ -705,6 +733,53 @@ class SpeechControllerContractTests(unittest.TestCase):
         finally:
             controller.stop()
             controller.shutdown()
+
+    def test_edge_worker_confirms_a_fast_resume_without_waiting_for_mci_pause(self):
+        controller = SpeechController()
+        controller._book = make_book()
+        controller._state = "playing"
+        controller._gen = 7
+        finish = threading.Event()
+        result = []
+        start_event = {
+            "type": "sentence_start", "chapter_idx": 0,
+            "char_offset": 0, "char_end": 4, "text": "第一句。",
+        }
+        with (
+            mock.patch("novelreader.tts_engine._mci_open"),
+            mock.patch("novelreader.tts_engine._mci_close"),
+            mock.patch("novelreader.tts_engine._mci_play"),
+            mock.patch("novelreader.tts_engine._mci_stop"),
+            mock.patch("novelreader.tts_engine._mci_pause"),
+            mock.patch("novelreader.tts_engine._mci_resume"),
+            mock.patch("novelreader.tts_engine._mci_set_volume"),
+            mock.patch("novelreader.tts_engine._set_process_volume"),
+            mock.patch("novelreader.tts_engine._mci_playing", side_effect=lambda: not finish.is_set()),
+        ):
+            worker = threading.Thread(
+                target=lambda: result.append(controller._speak_edge_play(b"audio", 7, start_event)),
+                daemon=True,
+            )
+            worker.start()
+            deadline = time.time() + 1
+            started = []
+            while time.time() < deadline and not started:
+                started = controller.drain()
+                time.sleep(0.005)
+            self.assertEqual([event["type"] for event in started], ["sentence_start"])
+            self.assertTrue(controller.pause())
+            self.assertTrue(controller.resume())
+            confirmed = []
+            deadline = time.time() + 1
+            while time.time() < deadline and not confirmed:
+                confirmed = controller.drain()
+                time.sleep(0.005)
+            finish.set()
+            worker.join(1)
+        controller.shutdown()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [True])
+        self.assertEqual([event["type"] for event in confirmed], ["sentence_resume"])
 
     def test_sapi_lifecycle_stays_on_the_worker_thread(self):
         calls = []

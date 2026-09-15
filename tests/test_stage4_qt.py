@@ -107,6 +107,8 @@ class _Window(QObject):
         self.handle = _Handle()
         self.shown = 0
         self.closed = 0
+        self.hidden_main = 0
+        self.restored_main = 0
         self.applied = []
         self.shutdown_count = 0
 
@@ -120,6 +122,12 @@ class _Window(QObject):
 
     def closeFloatingReaderWindow(self):
         self.closed += 1
+
+    def hideMainForFloating(self):
+        self.hidden_main += 1
+
+    def restoreFromTray(self):
+        self.restored_main += 1
 
     def applyFloatingReaderSettings(self, settings):
         self.applied.append(dict(settings))
@@ -408,6 +416,7 @@ class Stage4BridgeTests(unittest.TestCase):
         self.assertEqual(shown["sessionId"], "session-4")
         self.assertEqual(shown["bookId"], "book-4")
         self.assertEqual(self.window.shown, 1)
+        self.assertEqual(self.window.hidden_main, 1)
 
         updated = self._data(self.bridge.updateFloatingReaderSettings(json.dumps({
             "patch": {"backgroundOpacity": 0.75, "topmost": False, "fontSize": 30, "hoverDisplayEnabled": False}
@@ -428,6 +437,12 @@ class Stage4BridgeTests(unittest.TestCase):
 
         closed = self._data(self.bridge.closeFloatingReader())
         self.assertTrue(closed["closed"])
+        self.assertFalse(self.playback.closed)
+        self._data(self.bridge.showFloatingReader())
+        returned = self._data(self.bridge.returnToMainWindow())
+        self.assertTrue(returned["closed"])
+        self.assertEqual(self.window.hidden_main, 2)
+        self.assertEqual(self.window.restored_main, 1)
         self.assertFalse(self.playback.closed)
 
     def test_window_move_resize_and_single_drain_path(self):

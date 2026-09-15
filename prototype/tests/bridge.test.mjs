@@ -118,6 +118,7 @@ function nativeEnvironment(response) {
     getFloatingReaderState(callback) { calls.push(["getFloatingReaderState"]); callback(ok(floatingFixture())); },
     showFloatingReader(callback) { calls.push(["showFloatingReader"]); callback(ok(floatingFixture({ visible: true }))); },
     closeFloatingReader(callback) { calls.push(["closeFloatingReader"]); callback(ok({ closed: true })); },
+    returnToMainWindow(callback) { calls.push(["returnToMainWindow"]); callback(ok({ closed: true })); },
     updateFloatingReaderSettings(input, callback) { calls.push(["updateFloatingReaderSettings", input]); const fixture = floatingFixture(); callback(ok({ ...fixture, settings: { ...fixture.settings, ...JSON.parse(input).patch } })); },
     updateAppPreferences(input, callback) { calls.push(["updateAppPreferences", input]); const patch = JSON.parse(input).patch; const preferences = { ...response.data.preferences, ...patch }; preferences.colorScheme = preferences.theme === "夜间" ? "dark" : "light"; callback(ok(preferences)); },
     updateSpeechPreferences(input, callback) { calls.push(["updateSpeechPreferences", input]); const patch = JSON.parse(input).patch; callback(ok({ ...response.data.speech, settings: { ...response.data.speech.settings, ...patch } })); },
@@ -336,10 +337,12 @@ test("native floating controls use the frozen slots, validate settings and prese
   connection.floating.startWindowMove();
   connection.floating.startWindowResize("bottomRight");
   const closed = await connection.floating.close();
+  const returned = await connection.floating.returnToMain();
 
   assert.equal(state.data.sessionId, "reader-session");
   assert.equal(state.data.bookId, "book-1");
   assert.equal(closed.data.closed, true);
+  assert.equal(returned.data.closed, true);
   assert.deepEqual(env.calls, [
     ["getFloatingReaderState"],
     ["showFloatingReader"],
@@ -347,6 +350,7 @@ test("native floating controls use the frozen slots, validate settings and prese
     ["startFloatingWindowMove"],
     ["startFloatingWindowResize", "bottomRight"],
     ["closeFloatingReader"],
+    ["returnToMainWindow"],
   ]);
   await assert.rejects(
     connection.floating.updateSettings({ patch: { backgroundOpacity: 2 } }),
@@ -740,7 +744,17 @@ test("active reader scrolls cannot passively move the shared playback sentence",
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
   assert.match(source, /const handleScroll = \(event\) => \{[\s\S]*if \(playback\.status !== "idle"\) return;/);
   assert.match(source, /\[playback\?\.status\]/);
-  assert.match(source, /behavior: playback\.status === "paused" \? "auto" : "smooth"/);
+  assert.match(source, /behavior: requested \|\| playback\.status !== "paused" \? "smooth" : "auto"/);
+});
+
+test("return-to-current-reader-text is a scroll-only playback-bar action", async () => {
+  const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  const handler = source.match(/const locateCurrentSentence = \(\) => \{[\s\S]*?\n  \};\n  const handleScroll/);
+  assert.ok(handler);
+  assert.match(handler[0], /target\.scrollIntoView\(\{ block: "center", behavior: "smooth" \}\)/);
+  assert.match(handler[0], /onGetWindow\(current\.chapterIndex, current\.startOffset\)/);
+  assert.doesNotMatch(handler[0], /onNavigate\(|onUpdatePosition\(|onCommand\(/);
+  assert.match(source, /label="定位当前朗读" disabled=\{!playback\.sentence\}/);
 });
 
 test("floating footer replaces bilingual control with a native bottom-right resize grip", async () => {

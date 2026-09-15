@@ -646,6 +646,9 @@ class DesktopBridge(QObject):
             if not callable(show):
                 raise RuntimeError("floating window host is unavailable")
             show(self._floating.state()["settings"])
+            hide_main = getattr(self._window, "hideMainForFloating", None)
+            if callable(hide_main):
+                hide_main()
             state = self._floating.state()
             self._emit_floating_state(state)
             return self._ok_response(state)
@@ -662,6 +665,22 @@ class DesktopBridge(QObject):
             if self._floating.close():
                 self._emit_floating_state()
             return self._ok_response({"closed": True})
+        except Exception as exc:
+            return self._floating_error_response({"closed": False}, exc)
+
+    @Slot(result=str)
+    def returnToMainWindow(self) -> str:
+        """Switch surfaces without stopping the one active speech session."""
+        result = self.closeFloatingReader()
+        try:
+            response = json.loads(result)
+            if response.get("error"):
+                return result
+            restore = getattr(self._window, "restoreFromTray", None)
+            if not callable(restore):
+                raise RuntimeError("main window host is unavailable")
+            restore()
+            return result
         except Exception as exc:
             return self._floating_error_response({"closed": False}, exc)
 

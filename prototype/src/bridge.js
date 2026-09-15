@@ -807,6 +807,9 @@ function nativeFloating(nativeBridge) {
     async close() {
       return parseBridgeResponse(await invokeWithResult(nativeBridge, "closeFloatingReader"), validFloatingClose);
     },
+    async returnToMain() {
+      return parseBridgeResponse(await invokeWithResult(nativeBridge, "returnToMainWindow"), validFloatingClose);
+    },
     async updateSettings(input) {
       const patch = input?.patch;
       const validPatch = patch
@@ -1335,6 +1338,11 @@ function createDemoConnection() {
         return response(demoFloating);
       },
       async close() {
+        demoFloating = { ...demoFloating, visible: false };
+        emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating });
+        return response({ closed: true });
+      },
+      async returnToMain() {
         demoFloating = { ...demoFloating, visible: false };
         emit(floatingChangedCallbacks, { schemaVersion: SCHEMA_VERSION, state: demoFloating });
         return response({ closed: true });
