@@ -31,12 +31,8 @@
 | [v2.0.6](release-notes/v2.0.6.md) | 主面板可一键平滑定位当前朗读句；主面板与悬浮窗互相切换；调整设置分类顺序，进一步避免播放/暂停时文字提前跳句。 |
 | [v2.0.5](release-notes/v2.0.5.md) | 修复暂停/恢复时主面板与悬浮窗错句；暂停后当前句在正文可见；主窗口圆角更平滑，窄窗口网络提示不再遮挡播放按钮。 |
 | [v2.0.4](release-notes/v2.0.4.md) | 修复悬浮窗暂停时文字与语音不同步；联网语音恢复后自动切回用户音色；设置即时生效并改为紧凑圆角分类页；新版弹窗可先查看更新内容。 |
-| [v2.0.3](release-notes/v2.0.3.md) | 优化在线朗读的预取、重试与断点续读；网络异常有轻量提示；悬浮窗支持更顺手的缩放；最近阅读使用新的书籍封面。 |
-| v2.0.2 | 新增软件更新中心：启动检查、手动检查、后台下载、SHA256 校验、跳过版本和查看发布说明。 |
-| v2.0.1 | 修复 Edge 朗读在句子边界暂停后可能无法继续，以及设置窗口偶发闪烁的问题。 |
-| v2.0.0 | 启用 Qt WebEngine + React 桌面界面，新增内容库、阅读器与独立悬浮朗读窗。 |
 
-查看 [完整更新历史](CHANGELOG.md) 或 [GitHub Releases](https://github.com/superadminist/QYReader/releases)。每次发布都必须新增 `release-notes/vX.Y.Z.md`，用于生成用户可读的 Release 说明。
+更早版本请查看 [完整更新历史](CHANGELOG.md) 或 [GitHub Releases](https://github.com/superadminist/QYReader/releases)。每次发布都必须新增 `release-notes/vX.Y.Z.md`，用于生成用户可读的 Release 说明。
 
 ## 架构
 
