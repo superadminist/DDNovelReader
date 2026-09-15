@@ -59,7 +59,7 @@ const DEFAULT_APP_PREFERENCES = {
 
 const DEFAULT_SOFTWARE_UPDATE = {
   status: "idle",
-  currentVersion: "2.0.5",
+  currentVersion: "2.0.6",
   latestVersion: "",
   lastCheckedAt: "",
   message: "尚未检查更新。",
@@ -1105,7 +1105,7 @@ function SettingsModal({ preferences, speech, floatingSettings, version, softwar
               </div>
               <p className="update-security-note">仅下载版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
             </section>
-            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.5"} · Qt WebEngine 桌面版</p></section>
+            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.6"} · Qt WebEngine 桌面版</p></section>
           </> : null}
         </div>
       </div>
@@ -1157,7 +1157,7 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.5");
+  const [appVersion, setAppVersion] = useState("2.0.6");
   const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
   const [updatePromptVersion, setUpdatePromptVersion] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1375,7 +1375,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.5");
+      setAppVersion(error.initialData?.app?.version || "2.0.6");
       setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
