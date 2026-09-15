@@ -126,11 +126,11 @@ def _inject_qwebchannel_script(page: QWebEnginePage) -> None:
 
 
 def _configure_main_web_view(view: QWebEngineView, page: QWebEnginePage) -> None:
-    """Keep the main WebEngine surface opaque during native move/resize."""
+    """Let CSS paint the main window's anti-aliased outer corners."""
     view.setObjectName("mainWebView")
-    page.setBackgroundColor(QColor("#f7f9fc"))
-    view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-    view.setStyleSheet("QWebEngineView#mainWebView { background: #f7f9fc; }")
+    page.setBackgroundColor(QColor(0, 0, 0, 0))
+    view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    view.setStyleSheet("QWebEngineView#mainWebView { background: transparent; }")
 
 
 def _configure_floating_web_view(view: QWebEngineView, page: QWebEnginePage) -> None:
@@ -351,14 +351,12 @@ class DesktopWindow(QMainWindow):
         _qa_trace("desktop-window:start")
         self.setWindowTitle("启远阅读")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-        # A translucent top-level QWebEngine window is periodically dropped by
-        # Windows' compositor during interactive resize, exposing the desktop
-        # for a complete frame.  The main window has no user-controlled
-        # transparency, so keep it on the stable opaque composition path and
-        # let DWM own the outer rounded clip.  The floating window deliberately
-        # remains translucent because its background opacity is configurable.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setStyleSheet("QMainWindow { background: #f7f9fc; }")
+        # Windows 10 does not honor DWMWA_WINDOW_CORNER_PREFERENCE.  Its
+        # binary QRegion mask leaves stair-stepped black triangles around a
+        # frameless window, so let the transparent WebEngine/CSS surface own
+        # the single anti-aliased clip instead.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("QMainWindow { background: transparent; }")
         self.setMinimumSize(960, 620)
         self._corner_timer = QTimer(self)
         self._corner_timer.setSingleShot(True)
@@ -589,4 +587,4 @@ class DesktopWindow(QMainWindow):
 
     def _sync_window_corners(self) -> None:
         rounded = not self.isMaximized() and not self.isFullScreen()
-        _apply_window_corners(self, 22, rounded, allow_opaque_mask=True)
+        _apply_window_corners(self, 22, rounded)

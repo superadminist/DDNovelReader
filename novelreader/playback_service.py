@@ -285,9 +285,14 @@ class PlaybackService:
         if self._deferred_sentence_start is not None:
             deferred = self._deferred_sentence_start
             self._deferred_sentence_start = None
-            event = self._consume_raw_event(deferred)
-            if event is not None:
-                self._pending_events.append(event)
+            # SAPI aborts the utterance on pause and replays it on resume.
+            # A start queued while paused is therefore stale: wait for the
+            # replay's real started-utterance callback before moving either UI.
+            # Edge/MCI instead resumes the already-started audio in place.
+            if self._active_backend == "edge":
+                event = self._consume_raw_event(deferred)
+                if event is not None:
+                    self._pending_events.append(event)
         self._queue_event("state")
         return True
 

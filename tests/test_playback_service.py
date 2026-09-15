@@ -213,9 +213,77 @@ class PlaybackServiceTests(unittest.TestCase):
         resumed_events = self.service.drain_events()
         self.assertEqual(
             [event["reason"] for event in resumed_events],
-            ["sentenceStart", "state"],
+            ["state"],
         )
-        self.assertEqual(self.service.snapshot()["sentence"]["text"], "第二句！")
+        self.assertEqual(self.service.snapshot()["sentence"]["text"], "第一句。")
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第一句。")
+
+        # SAPI was interrupted by Pause and must announce its replay from the
+        # worker, not advance from a stale, deferred next-sentence event.
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 0,
+            "char_end": 4,
+            "text": "第一句。",
+        })
+        replayed = self.service.drain_events()
+        self.assertEqual([event["reason"] for event in replayed], ["sentenceStart"])
+        self.assertEqual(replayed[0]["playback"]["sentence"]["text"], "第一句。")
+
+    def test_pause_and_resume_after_done_keep_both_surfaces_until_audio_starts(self):
+        self.service.control("play", "play-1")
+        generation = self.speech.generation()
+        self.speech.emit({
+            "type": "sentence_start", "generation": generation,
+            "chapter_idx": 0, "char_offset": 0, "char_end": 4,
+            "text": "第一句。",
+        })
+        self.service.drain_events()
+        self.speech.emit({
+            "type": "sentence_done", "generation": generation,
+            "chapter_idx": 0, "char_offset": 4,
+        })
+        self.service.drain_events()
+
+        self.service.control("pause", "pause-1")
+        paused = self.service.drain_events()[-1]["playback"]
+        self.assertEqual(paused["sentence"]["text"], "第一句。")
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第一句。")
+        self.service.control("play", "resume-1")
+        resumed = self.service.drain_events()[-1]["playback"]
+        self.assertEqual(resumed["sentence"]["text"], "第一句。")
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第一句。")
+        self.speech.emit({
+            "type": "sentence_start", "generation": generation,
+            "chapter_idx": 0, "char_offset": 4, "char_end": 8,
+            "text": "第二句！",
+        })
+        started = self.service.drain_events()[-1]["playback"]
+        self.assertEqual(started["sentence"]["text"], "第二句！")
+        self.assertEqual(self.service.floating_context()["current"]["text"], "第二句！")
+
+    def test_edge_pause_resumes_the_deferred_audio_start_in_place(self):
+        self.speech._backend = "edge"
+        self.service.control("play", "play-edge")
+        generation = self.speech.generation()
+        self.service.drain_events()
+        self.service.control("pause", "pause-edge")
+        self.speech.emit({
+            "type": "sentence_start",
+            "generation": generation,
+            "chapter_idx": 0,
+            "char_offset": 0,
+            "char_end": 4,
+            "text": "第一句。",
+        })
+        self.service.drain_events()
+        self.assertIsNone(self.service.snapshot()["sentence"])
+        self.service.control("play", "resume-edge")
+        resumed = self.service.drain_events()
+        self.assertEqual([event["reason"] for event in resumed], ["sentenceStart", "state"])
+        self.assertEqual(resumed[0]["playback"]["sentence"]["text"], "第一句。")
 
     def test_voice_or_rate_refresh_restarts_current_sentence_and_preserves_pause(self):
         self.service.control("play", "play-1")

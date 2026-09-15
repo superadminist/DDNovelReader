@@ -448,6 +448,18 @@ class DesktopBridge(QObject):
         if request is None:
             return self._error_response(empty, "INVALID_REQUEST", "阅读进度请求格式不正确。")
         try:
+            # This slot is for passive scroll-position sync, not explicit
+            # navigation.  Smooth scrolling can deliver a late event just
+            # after Pause; never replace an active audio sentence with the
+            # paragraph currently crossing the viewport.
+            playback = self._playback.snapshot()
+            if playback["status"] in {"playing", "paused"}:
+                if str(request.get("sessionId") or "") != self._playback.session_identity()["sessionId"]:
+                    raise RuntimeError("reader session is not bound")
+                return self._ok_response({
+                    "updated": False,
+                    "position": playback["position"],
+                })
             data = self._reader.update_position(
                 request.get("sessionId"),
                 request.get("chapterIndex"),

@@ -192,10 +192,9 @@ class Stage4FloatingServiceTests(unittest.TestCase):
         _configure_floating_web_view(floating_view, floating_page)
 
         translucent = Qt.WidgetAttribute.WA_TranslucentBackground
-        self.assertEqual(main_view.attributes, [(translucent, False)])
-        self.assertEqual(main_page.color.name(), "#f7f9fc")
-        self.assertEqual(main_page.color.alpha(), 255)
-        self.assertIn("background: #f7f9fc", main_view.style)
+        self.assertEqual(main_view.attributes, [(translucent, True)])
+        self.assertEqual(main_page.color.alpha(), 0)
+        self.assertIn("background: transparent", main_view.style)
         self.assertEqual(floating_view.attributes, [(translucent, True)])
         self.assertEqual(floating_page.color.alpha(), 0)
         self.assertIn("background: transparent", floating_view.style)
@@ -333,13 +332,12 @@ class Stage4FloatingServiceTests(unittest.TestCase):
             "novelreader.qt_host._set_windows_corner_preference", return_value=False
         ) as preference:
             _apply_window_corners(floating, 30, True)
-            _apply_window_corners(main, 22, True, allow_opaque_mask=True)
-            _apply_window_corners(main, 22, True, allow_opaque_mask=True)
+            _apply_window_corners(main, 22, True)
+            _apply_window_corners(main, 22, True)
         self.assertEqual(floating.mask_count, 0)
         self.assertEqual(floating.clear_count, 1)
-        self.assertEqual(main.mask_count, 1)
-        self.assertTrue(main.mask.contains(QPoint(600, 400)))
-        self.assertFalse(main.mask.contains(QPoint(0, 0)))
+        self.assertEqual(main.mask_count, 0)
+        self.assertEqual(main.clear_count, 1)
         self.assertEqual(preference.call_count, 2)
 
     def test_rounded_window_region_preserves_edges_and_excludes_corner_pixels(self):

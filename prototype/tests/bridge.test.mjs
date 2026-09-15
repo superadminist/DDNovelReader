@@ -655,11 +655,12 @@ test("software update state carries bounded user-readable release notes", () => 
   assert.equal(typeof state.publishedAt, "string");
 });
 
-test("native window surfaces keep anti-aliased corner pixels inside the viewport", async () => {
+test("native window surfaces let the transparent CSS clip paint the main corners", async () => {
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
   assert.match(css, /--main-window-radius: 22px;/);
   assert.match(css, /--floating-window-radius: 30px;/);
-  assert.match(css, /\.desktop-host \.mac-window \{[^}]*width: calc\(100vw - 2px\);[^}]*height: calc\(100vh - 2px\);[^}]*margin: 1px;[^}]*border-radius: var\(--main-window-radius\);/s);
+  assert.match(css, /\.desktop-host \.mac-window \{[^}]*width: 100vw;[^}]*height: 100vh;[^}]*margin: 0;[^}]*border-radius: var\(--main-window-radius\);/s);
+  assert.match(css, /\.desktop-host\[data-window-mode="maximized"\] \.mac-window,[\s\S]*border-radius: 0;/);
   assert.match(css, /\.floating-surface-stage \{[^}]*padding: 2px;/s);
   assert.match(css, /\.native-floating-surface \{[^}]*border-radius: var\(--floating-window-radius\);/s);
 });
@@ -730,7 +731,16 @@ test("network trouble uses one subtle animated status shared by main and floatin
   assert.match(source, /<NativePlayer[\s\S]*networkNotice=\{networkNotice\}/);
   assert.match(source, /<NativeFloatingReader[\s\S]*networkNotice=\{networkNotice\}/);
   assert.match(css, /@keyframes network-status-ripple/);
+  assert.match(css, /\.network-status-copy \{[^}]*text-overflow: ellipsis;/s);
+  assert.match(css, /\.network-status-hint \{[^}]*max-width: 100%;[^}]*overflow: hidden;/s);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*network-status-icon/);
+});
+
+test("active reader scrolls cannot passively move the shared playback sentence", async () => {
+  const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  assert.match(source, /const handleScroll = \(event\) => \{[\s\S]*if \(playback\.status !== "idle"\) return;/);
+  assert.match(source, /\[playback\?\.status\]/);
+  assert.match(source, /behavior: playback\.status === "paused" \? "auto" : "smooth"/);
 });
 
 test("floating footer replaces bilingual control with a native bottom-right resize grip", async () => {

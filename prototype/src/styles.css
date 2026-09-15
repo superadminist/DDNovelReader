@@ -34,10 +34,10 @@ button { color: inherit; }
 
 .prototype-stage.desktop-host { padding: 0; background: transparent; }
 .desktop-host .mac-window {
-  width: calc(100vw - 2px);
-  height: calc(100vh - 2px);
+  width: 100vw;
+  height: 100vh;
   min-height: 0;
-  margin: 1px;
+  margin: 0;
   border: 1px solid rgba(255,255,255,.78);
   border-radius: var(--main-window-radius);
 }
@@ -248,10 +248,12 @@ h1, h2, p { margin-top: 0; }
 .page-count { color: #b1b5bd; text-align: center; font-size: 10px; }
 
 .player-bar { position: relative; z-index: 3; padding: 0 18px; display: grid; grid-template-columns: 190px 145px minmax(220px,1fr) 145px; gap: 12px; align-items: center; border-top: 1px solid #dce1e9; background: rgba(252,253,254,.96); box-shadow: 0 -8px 24px rgba(70, 79, 99, .06); }
+.player-copy { min-width: 0; }
 .player-copy strong, .player-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-copy strong { font-size: 11px; }
 .player-copy small { margin-top: 5px; color: #9ca3ae; font-size: 9px; }
-.network-status-hint { width: max-content; max-width: 100%; margin-top: 4px; padding: 3px 7px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(190,145,55,.22); border-radius: 999px; color: #806126; background: rgba(255,248,228,.88); font-size: 9px; line-height: 1; white-space: nowrap; }
+.network-status-hint { box-sizing: border-box; width: max-content; max-width: 100%; min-width: 0; margin-top: 4px; padding: 3px 7px; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; border: 1px solid rgba(190,145,55,.22); border-radius: 999px; color: #806126; background: rgba(255,248,228,.88); font-size: 9px; line-height: 1; white-space: nowrap; }
+.network-status-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .network-status-icon { position: relative; width: 14px; height: 14px; display: grid; flex: 0 0 14px; place-items: center; }
 .network-status-icon::after { position: absolute; inset: -2px; border: 1px solid currentColor; border-radius: 50%; content: ""; animation: network-status-ripple 1.45s ease-out infinite; }
 .network-status-icon svg { width: 13px; height: 13px; animation: network-status-signal 1.45s ease-in-out infinite; }
@@ -624,7 +626,7 @@ input[type="range"] { height: 3px; accent-color: #6875d8; cursor: pointer; }
   .toc-list button { grid-template-columns: 22px 1fr; padding-inline: 7px; }
   .reading-sheet { width: calc(100% - 18px); margin: 10px auto; height: calc(100% - 20px); padding: 35px 28px 45px; }
   .reading-sheet h1 { font-size: 24px; }
-  .player-bar { grid-template-columns: 1fr 128px 1fr; padding-inline: 10px; }
+  .player-bar { grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1fr); padding-inline: 10px; }
   .player-slider { display: none; }
   .player-copy { min-width: 0; }
   .floating-reader { min-width: 370px; }

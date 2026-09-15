@@ -437,11 +437,11 @@ async function primaryScenario() {
   const initialMainWindow = roleWindow(initialWindowSnapshot, "main");
   if (!initialFloatingWindow.visible || initialFloatingWindow.minimized) throw new Error("Floating top-level window is not visible");
   if (!initialFloatingWindow.toolWindow || initialMainWindow.toolWindow) throw new Error("Floating window taskbar/tool-window flags are incorrect");
-  if (initialMainWindow.layeredWindow || !initialFloatingWindow.layeredWindow) {
-    throw new Error(`Main and floating composition paths are not isolated: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
+  if (!initialMainWindow.layeredWindow || !initialFloatingWindow.layeredWindow) {
+    throw new Error(`Transparent rounded Qt composition is unavailable: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
   }
-  if (initialMainWindow.windowRegionType !== "complex" || initialFloatingWindow.windowRegionType !== "none") {
-    throw new Error(`Windows 10 corner regions are not isolated: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
+  if (initialMainWindow.windowRegionType !== "none" || initialFloatingWindow.windowRegionType !== "none") {
+    throw new Error(`Windows 10 binary masks still clip transparent CSS corners: ${JSON.stringify({ main: initialMainWindow, floating: initialFloatingWindow })}`);
   }
   if (!initialFloatingWindow.topmost || state.settings.topmost !== true) throw new Error("Floating window is not topmost by default");
   await waitFor(
@@ -509,9 +509,9 @@ async function primaryScenario() {
     return { radius: getComputedStyle(node).borderRadius, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, innerWidth, innerHeight };
   })()`);
   if (normalWindowStyle.radius !== "22px"
-      || Math.abs(normalWindowStyle.left - 1) > .75 || Math.abs(normalWindowStyle.top - 1) > .75
-      || Math.abs(normalWindowStyle.right - (normalWindowStyle.innerWidth - 1)) > .75
-      || Math.abs(normalWindowStyle.bottom - (normalWindowStyle.innerHeight - 1)) > .75) {
+      || Math.abs(normalWindowStyle.left) > .75 || Math.abs(normalWindowStyle.top) > .75
+      || Math.abs(normalWindowStyle.right - normalWindowStyle.innerWidth) > .75
+      || Math.abs(normalWindowStyle.bottom - normalWindowStyle.innerHeight) > .75) {
     throw new Error(`Main normal-state corner surface is incorrect: ${JSON.stringify(normalWindowStyle)}`);
   }
   const floatingWindowStyle = await evaluate(floating, `(() => {
@@ -534,7 +534,27 @@ async function primaryScenario() {
   if (!await clickLabel(main, "还原窗口")) throw new Error("Main restore control missing");
   await waitFor(main, "document.querySelector('.prototype-stage')?.dataset.windowMode === 'normal'", "Main normal state did not restore");
   await sleep(180);
-  if (roleWindow(probe(), "main").windowRegionType !== "complex") throw new Error("Restored main window did not regain its rounded native region");
+  if (roleWindow(probe(), "main").windowRegionType !== "none") throw new Error("Restored main window regained a jagged native region");
+  const normalRect = roleWindow(probe(), "main").rect;
+  for (const [width, height] of [[1120, 680], [1280, 720]]) {
+    const resized = roleWindow(probe("place", [
+      "--role", "main", "--x", String(normalRect.left), "--y", String(normalRect.top),
+      "--width", String(width), "--height", String(height),
+    ]), "main");
+    await sleep(180);
+    const resizedStyle = await evaluate(main, `(() => {
+      const node = document.querySelector('.mac-window');
+      const rect = node?.getBoundingClientRect();
+      return { radius: node && getComputedStyle(node).borderRadius,
+        width: rect?.width, height: rect?.height,
+        visibleReader: Boolean(document.querySelector('.native-reader')) };
+    })()`);
+    if (resized.windowRegionType !== "none" || resizedStyle.radius !== "22px"
+        || !resizedStyle.visibleReader || resizedStyle.width < 960 || resizedStyle.height < 620) {
+      throw new Error(`Main rounded surface failed after native resize: ${JSON.stringify({ resized, resizedStyle })}`);
+    }
+    evidence[`mainResize${width}`] = await capture(main, `stage4-main-resize-${width}.png`);
+  }
   const defaultLayout = await assertSurfaceFits(floating);
 
   if (!await clickLabel(floating, "播放")) throw new Error("Floating playback button missing");
@@ -554,6 +574,64 @@ async function primaryScenario() {
     if (!backendFailure?.error?.code || !floatingCurrent) throw new Error(`TTS backend failure was not structured: ${JSON.stringify(backendFailure)}`);
   } else if (playbackState.playback.status !== "playing" || !highlighted || !floatingCurrent || !floatingCurrent.startsWith(highlighted) || !sharedOffsets) {
     throw new Error(`Main/floating playback state diverged: ${JSON.stringify({ highlighted, floatingCurrent, playback: playbackState.playback })}`);
+  }
+
+  if (!backendFailure) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await waitFor(floating, `Boolean(document.querySelector('.floating-play[aria-label="暂停"]'))`, "Floating playing state did not reach its button");
+      if (!await clickLabel(floating, "暂停")) {
+        const controls = await evaluate(floating, `({ label: document.querySelector('.floating-play')?.getAttribute('aria-label'),
+          disabled: document.querySelector('.floating-play')?.disabled,
+          current: document.querySelector('[data-sentence-role="current"]')?.innerText })`);
+        throw new Error(`Floating pause control missing: ${JSON.stringify(controls)}`);
+      }
+      const paused = await waitForFloatingState(main,
+        (next) => next.playback.status === "paused",
+        "Pause did not reach both reader surfaces");
+      const pausedSentence = paused.playback.sentence;
+      if (!pausedSentence || pausedSentence.startOffset !== paused.context.current?.startOffset) {
+        throw new Error(`Pause changed the visible lyric: ${JSON.stringify(paused)}`);
+      }
+      await sleep(100);
+      const highlightViewport = await evaluate(main, `(() => {
+        const mark = document.querySelector('.reading-copy mark');
+        const sheet = document.querySelector('.reading-sheet');
+        const highlight = mark?.getBoundingClientRect();
+        const viewport = sheet?.getBoundingClientRect();
+        return { visible: Boolean(highlight && viewport && highlight.bottom > viewport.top + 8
+          && highlight.top < viewport.bottom - 8), highlightTop: highlight?.top,
+          highlightBottom: highlight?.bottom, viewportTop: viewport?.top, viewportBottom: viewport?.bottom };
+      })()`);
+      if (!highlightViewport.visible) throw new Error(`Paused highlight is outside the main reader viewport: ${JSON.stringify(highlightViewport)}`);
+      if (attempt === 0) {
+        evidence.mainPaused = await capture(main, "stage4-main-paused.png");
+        evidence.floatingPaused = await capture(floating, "stage4-floating-paused.png");
+      }
+      // Exercise the main reader's scroll callback while paused.  It must not
+      // persist a new viewport position over the sentence awaiting replay.
+      await evaluate(main, `(() => {
+        const sheet = document.querySelector('.reading-sheet');
+        sheet.scrollTop = Math.min(sheet.scrollHeight - sheet.clientHeight, sheet.scrollTop + 260);
+        sheet.dispatchEvent(new Event('scroll', { bubbles: true }));
+        return sheet.scrollTop;
+      })()`);
+      await sleep(650);
+      const stillPaused = await floatingState(main);
+      if (stillPaused.playback.status !== "paused"
+          || stillPaused.playback.sentence?.startOffset !== pausedSentence.startOffset
+          || stillPaused.context.current?.startOffset !== pausedSentence.startOffset) {
+        throw new Error(`Paused main scroll advanced the shared lyric: ${JSON.stringify(stillPaused)}`);
+      }
+      if (!await clickLabel(main, "播放")) throw new Error("Main resume control missing");
+      const resumed = await waitForFloatingState(main,
+        (next) => next.playback.status === "playing",
+        "Resume did not reach both reader surfaces");
+      if (resumed.playback.sentence?.startOffset !== pausedSentence.startOffset
+          || resumed.context.current?.startOffset !== pausedSentence.startOffset) {
+        throw new Error(`Resume published a future sentence before audio started: ${JSON.stringify(resumed)}`);
+      }
+    }
+    evidence.pauseResume = await capture(main, "stage4-main-pause-resume.png");
   }
 
   if (!await clickLabel(main, "最小化窗口")) throw new Error("Main minimize control missing");

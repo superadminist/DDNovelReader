@@ -50,6 +50,7 @@ class _Playback:
         self.session_id = ""
         self.events = []
         self.closed = False
+        self.status = "idle"
 
     @staticmethod
     def _position():
@@ -57,13 +58,16 @@ class _Playback:
 
     def snapshot(self):
         return {
-            "status": "idle",
+            "status": self.status,
             "position": self._position(),
             "sentence": None,
             "requestedBackend": "sapi",
             "activeBackend": None,
             "fallbackActive": False,
         }
+
+    def session_identity(self):
+        return {"sessionId": self.session_id, "bookId": "book-1"}
 
     def bind_session(self, session_id, book_id, content, chapter_index, char_offset):
         self.session_id = session_id
@@ -328,6 +332,27 @@ class Stage3QtBridgeTests(unittest.TestCase):
         })))
         self.assertEqual(settings["fontSize"], 20)
         self.assertEqual(self.playback.speech_controller.values["volume"], 60)
+
+    def test_passive_scroll_does_not_move_a_playing_or_paused_sentence(self):
+        self._data(self.bridge.openReaderBook("book-1"))
+        self.bridge._reader_thread.join(2)
+        self.bridge._drain_reader_events()
+        updates = []
+        original_update = self.bridge._reader.update_position
+
+        def record_update(*args):
+            updates.append(args)
+            return original_update(*args)
+
+        self.bridge._reader.update_position = record_update
+        for status in ("playing", "paused"):
+            self.playback.status = status
+            response = self._data(self.bridge.updateReaderPosition(json.dumps({
+                "sessionId": "session-1", "chapterIndex": 0, "charOffset": 8,
+            })))
+            self.assertFalse(response["updated"])
+            self.assertEqual(response["position"], self.playback.snapshot()["position"])
+        self.assertEqual(updates, [])
 
     def test_speech_settings_are_available_without_open_book_and_apply_live(self):
         state = self._data(self.bridge.getInitialState())

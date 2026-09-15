@@ -17,10 +17,11 @@ if PYSIDE6_AVAILABLE:
     from PySide6.QtCore import QCoreApplication, QObject
     from PySide6.QtTest import QSignalSpy
 
+    from novelreader import __version__
     from novelreader.import_service import LibraryImportService
     from novelreader.library_service import LibraryDataError
     from novelreader.qt_bridge import DesktopBridge, SCHEMA_VERSION
-    from novelreader.software_update import ReleaseInfo
+    from novelreader.software_update import ReleaseInfo, version_tuple
 
 
 @unittest.skipUnless(PYSIDE6_AVAILABLE, "PySide6 is not installed")
@@ -115,7 +116,7 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["library"]["total"], 1)
-        self.assertEqual(payload["data"]["app"]["version"], "2.0.4")
+        self.assertEqual(payload["data"]["app"]["version"], "2.0.5")
         self.assertEqual(payload["data"]["preferences"]["theme"], "护眼")
         self.assertTrue(payload["data"]["preferences"]["autoOpenLast"])
         self.assertFalse(payload["data"]["preferences"]["closeToTray"])
@@ -210,20 +211,22 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual(rejected["error"]["code"], "INVALID_REQUEST")
 
     def test_software_update_check_download_skip_install_and_open_page(self):
-        installer_path = Path(self.tempdir.name) / "QYReader-Setup-2.0.5.exe"
+        major, minor, patch_version = version_tuple(__version__)
+        next_version = f"{major}.{minor}.{patch_version + 1}"
+        installer_path = Path(self.tempdir.name) / f"QYReader-Setup-{next_version}.exe"
 
         class FakeSoftwareUpdates:
             @staticmethod
             def check_latest():
                 return ReleaseInfo(
-                    version="2.0.5",
-                    tag="v2.0.5",
-                    release_url="https://github.com/superadminist/QYReader/releases/tag/v2.0.5",
+                    version=next_version,
+                    tag=f"v{next_version}",
+                    release_url=f"https://github.com/superadminist/QYReader/releases/tag/v{next_version}",
                     published_at="2026-09-14T09:00:00Z",
-                    installer_name="QYReader-Setup-2.0.5.exe",
-                    installer_url="https://github.com/superadminist/QYReader/releases/download/v2.0.5/QYReader-Setup-2.0.5.exe",
+                    installer_name=f"QYReader-Setup-{next_version}.exe",
+                    installer_url=f"https://github.com/superadminist/QYReader/releases/download/v{next_version}/QYReader-Setup-{next_version}.exe",
                     installer_size=9,
-                    checksum_url="https://github.com/superadminist/QYReader/releases/download/v2.0.5/SHA256SUMS.txt",
+                    checksum_url=f"https://github.com/superadminist/QYReader/releases/download/v{next_version}/SHA256SUMS.txt",
                     release_notes="- 修复悬浮窗暂停错句\n- 设置立即生效",
                 )
 
@@ -243,16 +246,16 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertIn("暂停错句", available["releaseNotes"])
         self.assertEqual(available["publishedAt"], "2026-09-14T09:00:00Z")
 
-        skipped = json.loads(self.bridge.skipSoftwareUpdate(json.dumps({"version": "2.0.5"})))
+        skipped = json.loads(self.bridge.skipSoftwareUpdate(json.dumps({"version": next_version})))
         self.assertEqual(skipped["data"]["status"], "skipped")
         metadata = self.bridge._app.update_metadata()
-        self.assertEqual(metadata["skippedVersion"], "2.0.5")
+        self.assertEqual(metadata["skippedVersion"], next_version)
 
         mark = update_spy.count()
         self.bridge.checkSoftwareUpdate(json.dumps({"manual": True}))
         self._wait_for_update_status(update_spy, "available", mark)
         mark = update_spy.count()
-        downloading = json.loads(self.bridge.downloadSoftwareUpdate(json.dumps({"version": "2.0.5"})))
+        downloading = json.loads(self.bridge.downloadSoftwareUpdate(json.dumps({"version": next_version})))
         self.assertEqual(downloading["data"]["status"], "downloading")
         ready = self._wait_for_update_status(update_spy, "ready", mark)
         self.assertEqual(ready["progressPercent"], 100)
@@ -260,7 +263,7 @@ class DesktopBridgeTests(unittest.TestCase):
 
         opened = json.loads(self.bridge.openSoftwareUpdatePage("release"))
         self.assertTrue(opened["ok"])
-        self.assertTrue(self.window.opened_url.endswith("/tag/v2.0.5"))
+        self.assertTrue(self.window.opened_url.endswith(f"/tag/v{next_version}"))
         installing = json.loads(self.bridge.installSoftwareUpdate())
         self.assertEqual(installing["data"]["status"], "installing")
         self.assertEqual(self.window.launched_installer, str(installer_path))

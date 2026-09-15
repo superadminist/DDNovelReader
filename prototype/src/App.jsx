@@ -58,7 +58,7 @@ const DEFAULT_APP_PREFERENCES = {
 
 const DEFAULT_SOFTWARE_UPDATE = {
   status: "idle",
-  currentVersion: "2.0.4",
+  currentVersion: "2.0.5",
   latestVersion: "",
   lastCheckedAt: "",
   message: "尚未检查更新。",
@@ -876,10 +876,20 @@ function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, o
 
   useEffect(() => () => window.clearTimeout(scrollTimerRef.current), []);
   useEffect(() => {
+    if (playback?.status !== "idle") {
+      window.clearTimeout(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+  }, [playback?.status]);
+  useEffect(() => {
     if (!sentence || !windowData) return;
     const index = windowData.blocks.findIndex((block) => block.startOffset <= sentence.startOffset && block.endOffset >= sentence.startOffset);
-    if (index >= 0) document.getElementById(`native-reader-block-${index}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [sentence?.chapterIndex, sentence?.startOffset, windowData]);
+    const block = index >= 0 ? document.getElementById(`native-reader-block-${index}`) : null;
+    (block?.querySelector("mark") || block)?.scrollIntoView({
+      block: "center",
+      behavior: playback.status === "paused" ? "auto" : "smooth",
+    });
+  }, [sentence?.chapterIndex, sentence?.startOffset, playback?.status, windowData]);
 
   if (state.phase === "opening") return <section className="reader-page reader-message"><div><strong>正在打开真实内容…</strong><span>正在恢复章节与阅读进度</span></div></section>;
   if (state.phase !== "ready" || !data) return <section className="reader-page reader-message"><div><strong>无法打开阅读器</strong><span>{state.error || "请返回内容库后重试。"}</span><button className="secondary-button" onClick={onBack}>返回内容库</button></div></section>;
@@ -898,10 +908,13 @@ function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, o
     onNavigate(target);
   };
   const handleScroll = (event) => {
-    if (playback.status === "playing") return;
+    // Scrolls caused by highlighting can finish after Pause.  Never let them
+    // navigate the shared audio session while it is playing or paused.
+    if (playback.status !== "idle") return;
     const container = event.currentTarget;
     window.clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = window.setTimeout(() => {
+      if (playback.status !== "idle") return;
       const blocks = [...container.querySelectorAll("[data-reader-block]")];
       const top = container.getBoundingClientRect().top;
       const visible = blocks.find((node) => node.getBoundingClientRect().bottom >= top + 8) || blocks.at(-1);
@@ -925,8 +938,9 @@ function NativeReader({ state, networkNotice, onBack, onNavigate, onGetWindow, o
           {state.windowLoading ? <div className="reader-window-loading">正在加载正文窗口…</div> : null}
           {windowData.hasBefore ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowStartOffset)}>加载前文</button> : null}
           <div className="reading-copy">{windowData.blocks.map((block, index) => {
-            const highlightStart = sentence && sentence.endOffset > block.startOffset && sentence.startOffset < block.endOffset ? sentence.startOffset : null;
-            const highlightEnd = highlightStart === null ? null : sentence.endOffset;
+            const overlaps = sentence && sentence.endOffset > block.startOffset && sentence.startOffset < block.endOffset;
+            const highlightStart = overlaps ? Math.max(sentence.startOffset, block.startOffset) : null;
+            const highlightEnd = overlaps ? Math.min(sentence.endOffset, block.endOffset) : null;
             return <div id={`native-reader-block-${index}`} key={block.id}><ReaderTextBlockView block={block} highlightStart={highlightStart} highlightEnd={highlightEnd} paragraphMode={data.settings.paragraphMode} firstLineIndent={data.settings.firstLineIndent} /></div>;
           })}</div>
           {windowData.hasAfter ? <button className="window-load-button" onClick={() => onGetWindow(windowData.chapterIndex, windowData.windowEndOffset)}>加载后文</button> : null}
@@ -1051,7 +1065,7 @@ function SettingsModal({ preferences, speech, floatingSettings, version, softwar
               </div>
               <p className="update-security-note">仅下载版本匹配的 Windows 安装包；SHA256 校验通过后才允许安装。</p>
             </section>
-            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.4"} · Qt WebEngine 桌面版</p></section>
+            <section className="settings-section about-section"><h3>关于</h3><p>启远阅读（QYReader） {version || "2.0.5"} · Qt WebEngine 桌面版</p></section>
           </> : null}
         </div>
       </div>
@@ -1103,7 +1117,7 @@ function MainApplication() {
   const [nativeFloatingState, setNativeFloatingState] = useState(null);
   const [appPreferences, setAppPreferences] = useState(DEFAULT_APP_PREFERENCES);
   const [speechState, setSpeechState] = useState(DEFAULT_SPEECH_STATE);
-  const [appVersion, setAppVersion] = useState("2.0.4");
+  const [appVersion, setAppVersion] = useState("2.0.5");
   const [softwareUpdate, setSoftwareUpdate] = useState(DEFAULT_SOFTWARE_UPDATE);
   const [updatePromptVersion, setUpdatePromptVersion] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1321,7 +1335,7 @@ function MainApplication() {
       setBooks(error.initialData?.library?.books || []);
       setCapabilities(error.initialData?.capabilities || EMPTY_CAPABILITIES);
       setAppPreferences(error.initialData?.preferences || DEFAULT_APP_PREFERENCES);
-      setAppVersion(error.initialData?.app?.version || "2.0.4");
+      setAppVersion(error.initialData?.app?.version || "2.0.5");
       setSoftwareUpdate(error.initialData?.softwareUpdate || DEFAULT_SOFTWARE_UPDATE);
       setBridgeError(error.message || "无法连接桌面程序。");
       setLibraryLoading(false);
