@@ -641,6 +641,8 @@ class WholeBookCacher:
 
 
 class SpeechController:
+    _SAPI_INTERRUPTED = object()
+
     def __init__(self):
         self._cv = threading.Condition()
         self._state = "idle"  # idle / playing / paused
@@ -1686,6 +1688,11 @@ class SpeechController:
                     return
                 if self._should_stop(gen):
                     return
+                if ok is self._SAPI_INTERRUPTED:
+                    # SAPI stop discarded this utterance.  A fast Resume may
+                    # already have restored "playing", so state alone cannot
+                    # decide whether this sentence actually finished.
+                    continue
                 with self._cv:
                     if self._state == "paused":
                         self._cv.wait_for(
@@ -1693,13 +1700,9 @@ class SpeechController:
                             or self._book is None
                             or self._gen != gen
                         )
-                        # SAPI pause stops the utterance, so it must replay the
-                        # current sentence. Edge/MCI resumes in-place; reaching
-                        # this branch means pause raced with natural sentence
-                        # completion, and replaying would wait forever for an
-                        # already-consumed prefetch offset.
-                        if self._active_sentence_backend != "edge":
-                            continue
+                        # The audio finished before Pause reached this branch.
+                        # A stopped SAPI utterance took the interrupted path
+                        # above; completed audio advances after Resume.
                 if self._should_stop(gen):
                     return
                 self._post(
@@ -1776,6 +1779,7 @@ class SpeechController:
         self._active_sentence_backend = "sapi"
         done = threading.Event()
         started = threading.Event()
+        interrupted_by_pause = False
         result = {"completed": None, "error": None}
         utterance_name = f"sapi-{gen}-{id(done)}"
 
@@ -1821,6 +1825,7 @@ class SpeechController:
                     break
                 with self._cv:
                     if self._state == "paused":
+                        interrupted_by_pause = True
                         self._engine.stop()  # 暂停：同线程打断
                         break
                 try:
@@ -1831,11 +1836,11 @@ class SpeechController:
             if not done.is_set() and not self._should_stop(gen):
                 with self._cv:
                     paused = self._state == "paused"
-                if not paused:
+                if not paused and not interrupted_by_pause:
                     raise RuntimeError("系统语音未确认完成")
             with self._cv:
                 paused = self._state == "paused"
-            interrupted = self._should_stop(gen) or paused
+            interrupted = self._should_stop(gen) or paused or interrupted_by_pause
             if result["error"] is not None and not interrupted:
                 raise RuntimeError("系统语音驱动出错") from result["error"]
             if done.is_set() and not interrupted:
@@ -1863,6 +1868,8 @@ class SpeechController:
                     self._engine.disconnect(token)
                 except Exception:
                     pass
+        if interrupted_by_pause:
+            return self._SAPI_INTERRUPTED
         return True
 
     # ---------- Edge 后端 ----------

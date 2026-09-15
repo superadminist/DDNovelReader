@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from . import __version__
+from .paths import default_data_dir
 
 
 LATEST_RELEASE_API = "https://api.github.com/repos/superadminist/QYReader/releases/latest"
@@ -65,9 +65,7 @@ def is_newer_version(candidate: str, current: str = __version__) -> bool:
 
 
 def default_update_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    root = Path(base) if base else Path(tempfile.gettempdir())
-    return root / "QYReader" / "updates"
+    return default_data_dir() / "updates"
 
 
 class SoftwareUpdateService:

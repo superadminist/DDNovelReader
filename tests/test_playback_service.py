@@ -643,7 +643,7 @@ class SpeechControllerContractTests(unittest.TestCase):
                     time.sleep(0.005)
             elif len(calls) == 2:
                 replay_started.set()
-            return True
+            return controller._SAPI_INTERRUPTED if len(calls) == 1 else True
 
         controller._speak_edge = speak_edge
         book = make_book("第一句。第二句！", "")
@@ -660,6 +660,98 @@ class SpeechControllerContractTests(unittest.TestCase):
             controller.shutdown()
 
         self.assertEqual(calls[:2], ["第一句。", "第一句。"])
+
+    def test_fast_resume_after_fallback_sapi_stop_replays_before_advancing(self):
+        controller = SpeechController()
+        controller.set_voice("zh-CN-XiaoxiaoNeural")
+        controller.set_sentence_gap(0)
+        controller._edge_synthesize = lambda text: None
+        controller._sync_props = lambda: None
+        interrupted = threading.Event()
+        release_return = threading.Event()
+
+        class InterruptedEngine:
+            def __init__(self):
+                self.callbacks = {}
+                self.name = None
+                self.spoken = []
+                self.started = False
+
+            def connect(self, topic, callback):
+                self.callbacks[topic] = callback
+                return topic
+
+            def disconnect(self, topic):
+                self.callbacks.pop(topic, None)
+
+            def say(self, text, name=None):
+                self.name = name
+                self.spoken.append(text)
+                self.started = False
+
+            def iterate(self):
+                if not self.started:
+                    self.started = True
+                    self.callbacks["started-word"](name=self.name)
+                if len(self.spoken) > 1:
+                    self.callbacks["finished-utterance"](
+                        name=self.name, completed=True
+                    )
+
+            def stop(self):
+                if len(self.spoken) == 1:
+                    self.callbacks["finished-utterance"](
+                        name=self.name, completed=False
+                    )
+
+        engine = InterruptedEngine()
+        controller._engine = engine
+        speak_sapi = controller._speak_sapi
+
+        def wait_after_sapi_stop(text, generation, start_event=None):
+            outcome = speak_sapi(text, generation, start_event)
+            if len(engine.spoken) == 1:
+                interrupted.set()
+                release_return.wait(1)
+            return outcome
+
+        controller._speak_sapi = wait_after_sapi_stop
+        service = PlaybackService(controller)
+        service.bind_session("session", "book", make_book("第一句。第二句！", ""))
+        seen = []
+        try:
+            service.control("play", "play-edge")
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                seen.extend(service.drain_events())
+                if service.snapshot()["fallbackActive"] and service.snapshot()["sentence"]:
+                    break
+                time.sleep(0.005)
+            self.assertTrue(service.snapshot()["fallbackActive"])
+            self.assertEqual(service.snapshot()["sentence"]["text"], "第一句。")
+
+            service.control("pause", "pause-fallback")
+            self.assertTrue(interrupted.wait(1))
+            self.assertEqual(service.snapshot()["sentence"]["text"], "第一句。")
+            self.assertEqual(service.floating_context()["current"]["text"], "第一句。")
+            service.control("play", "resume-fallback")
+            release_return.set()
+
+            deadline = time.time() + 2
+            while time.time() < deadline and len(engine.spoken) < 3:
+                seen.extend(service.drain_events())
+                time.sleep(0.005)
+            self.assertEqual(engine.spoken, ["第一句。", "第一句。", "第二句！"])
+            seen.extend(service.drain_events())
+            self.assertEqual(
+                [event["playback"]["sentence"]["text"] for event in seen
+                 if event["reason"] == "sentenceStart"],
+                ["第一句。", "第一句。", "第二句！"],
+            )
+            self.assertNotIn("error", [event["reason"] for event in seen])
+        finally:
+            release_return.set()
+            service.shutdown()
 
     def test_edge_failure_is_structured_and_falls_back(self):
         controller = SpeechController()

@@ -7,11 +7,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from novelreader.software_update import (
     LATEST_RELEASE_API,
     SoftwareUpdateError,
     SoftwareUpdateService,
+    default_update_dir,
     is_newer_version,
     version_tuple,
 )
@@ -36,6 +38,24 @@ def release_payload(version: str, installer: bytes, *, checksum_hash: str | None
 
 
 class SoftwareUpdateServiceTests(unittest.TestCase):
+    def test_default_download_dir_uses_packaged_data_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            install_dir = Path(temp) / "QYReader"
+            executable = install_dir / "QYReader.exe"
+            with patch("novelreader.paths.sys.frozen", True, create=True), patch(
+                "novelreader.paths.sys.executable", str(executable)
+            ), patch.dict("os.environ", {"DOUBAO_NOVEL_DATA": ""}):
+                self.assertEqual(default_update_dir(), install_dir.resolve() / "data" / "updates")
+                self.assertEqual(
+                    SoftwareUpdateService().update_dir, install_dir.resolve() / "data" / "updates"
+                )
+
+    def test_default_download_dir_respects_data_override(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"DOUBAO_NOVEL_DATA": temp}
+        ):
+            self.assertEqual(default_update_dir(), Path(temp) / "updates")
+
     def test_semantic_versions_compare_numerically(self):
         self.assertEqual(version_tuple("v2.10.3"), (2, 10, 3))
         self.assertTrue(is_newer_version("2.0.2", "2.0.1"))
